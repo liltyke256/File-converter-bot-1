@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import io
 import logging
 import os
@@ -12,6 +13,7 @@ import fitz
 import img2pdf
 from pdf2docx import Converter
 from PIL import Image
+from replit import db
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -56,6 +58,7 @@ COMMANDS = {
 
 MAX_ZIP_FILES = 25
 MAX_UNZIP_FILES = 25
+USER_KEY_PREFIX = "user:"
 
 logging.basicConfig(level=logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -64,6 +67,7 @@ logging.getLogger("telegram.ext").setLevel(logging.WARNING)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     context.user_data.pop("mode", None)
     context.user_data.pop("zip_files", None)
     await update.message.reply_text(
@@ -83,6 +87,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+
+    total_users = len(get_user_ids())
+    await update.message.reply_text(f"📊 Total users: {total_users}")
+
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /broadcast Your message here")
+        return
+
+    message = " ".join(context.args)
+    sent = 0
+    failed = 0
+
+    for user_id in get_user_ids():
+        try:
+            await context.bot.send_message(chat_id=int(user_id), text=f"📢 {message}")
+            sent += 1
+        except Exception:
+            failed += 1
+
+    await update.message.reply_text(f"Broadcast sent to {sent} user(s). Failed: {failed}.")
+
+
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "*All supported formats:*\n\n"
@@ -98,6 +132,28 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Usage: Tap a command first, then upload your file.",
         parse_mode="Markdown",
     )
+
+
+def get_admin_id() -> int:
+    admin_id = os.getenv("ADMIN_ID")
+    if not admin_id:
+        raise RuntimeError("ADMIN_ID secret is required. Add your Telegram numeric user ID before starting the bot.")
+    return int(admin_id)
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id == get_admin_id()
+
+
+def track_user(update: Update):
+    if not update.effective_user:
+        return
+
+    db[f"{USER_KEY_PREFIX}{update.effective_user.id}"] = str(datetime.date.today())
+
+
+def get_user_ids() -> list[str]:
+    return [key.removeprefix(USER_KEY_PREFIX) for key in db.keys() if str(key).startswith(USER_KEY_PREFIX)]
 
 
 async def set_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -421,9 +477,12 @@ def main():
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise RuntimeError("BOT_TOKEN secret is required. Add your Telegram bot token before starting the bot.")
+    get_admin_id()
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("zip", zip_cmd))
     app.add_handler(CommandHandler("donezip", done_zip))

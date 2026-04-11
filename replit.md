@@ -1,15 +1,16 @@
 # File Converter Bot
 
 ## Overview
-A Python Telegram bot that converts uploaded files after the user selects a conversion command. It supports PDF to DOCX, DOCX to PDF, JPG to PNG, PNG to JPG, image to PDF, PDF to PNG images, compressing multiple uploaded files into ZIP archives, and extracting ZIP archives back into files.
+A Python Telegram bot that converts uploaded files after the user selects a conversion command. It supports PDF to DOCX, DOCX to PDF, JPG to PNG, PNG to JPG, image to PDF, PDF to PNG images, compressing multiple uploaded files into ZIP archives, extracting ZIP archives back into files, and admin-only user stats/broadcasts.
 
 ## Project Structure
-- `main.py` - Telegram bot command handlers, upload handling, conversion functions, ZIP creation, and ZIP extraction.
+- `main.py` - Telegram bot command handlers, upload handling, conversion functions, ZIP creation, ZIP extraction, user tracking, and admin commands.
 - `pyproject.toml` - Python dependency list.
 - `.replit` - Python entrypoint and deployment command.
 
 ## Runtime Configuration
 - Requires a `BOT_TOKEN` secret containing the Telegram bot token from BotFather.
+- Requires an `ADMIN_ID` secret containing the numeric Telegram user ID allowed to use admin commands.
 - The bot runs as a long-lived console workflow with `python3 main.py`.
 
 ## Bot Commands
@@ -22,8 +23,11 @@ A Python Telegram bot that converts uploaded files after the user selects a conv
 - `/zip` - Start collecting uploaded files into a ZIP archive.
 - `/donezip` - Finish ZIP collection and receive the archive.
 - `/unzip` - Upload a ZIP archive and receive extracted files.
+- `/stats` - Admin-only total tracked users.
+- `/broadcast <message>` - Admin-only message broadcast to tracked users.
 
 ## Dependencies
 - `python-telegram-bot` for Telegram polling and handlers.
 - `Pillow`, `img2pdf`, `pdf2docx`, and `pymupdf` for file conversion.
+- `replit` for key-value user tracking.
 - LibreOffice system package for DOCX to PDF conversion.
