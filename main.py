@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import shutil
 import subprocess
@@ -51,6 +52,11 @@ COMMANDS = {
         "extensions": {".pdf"},
     },
 }
+
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("telegram.ext").setLevel(logging.WARNING)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -268,7 +274,7 @@ def main():
 
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
 
-    print("Bot running...")
+    print("Bot running...", flush=True)
     app.run_polling()
 
 
