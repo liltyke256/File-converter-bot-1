@@ -1,0 +1,13 @@
+[project]
+name = "python-template"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+requires-python = ">=3.11"
+dependencies = [
+    "img2pdf>=0.6.3",
+    "pdf2docx>=0.5.12",
+    "pillow>=12.2.0",
+    "pymupdf>=1.27.2.2",
+    "python-telegram-bot>=22.7",
+]

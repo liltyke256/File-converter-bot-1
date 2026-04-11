@@ -1,0 +1,19 @@
+entrypoint = "main.py"
+modules = ["python-3.11"]
+
+[nix]
+channel = "stable-25_05"
+packages = ["exiftool", "freetype", "ghostscript", "gumbo", "harfbuzz", "imagemagickBig", "jbig2dec", "lcms2", "libimagequant", "libjpeg", "libjpeg_turbo", "libtiff", "libwebp", "libxcrypt", "mupdf", "netpbm", "openjpeg", "poppler_utils", "swig", "tcl", "tk", "xcbuild", "zlib"]
+
+[unitTest]
+language = "python3"
+
+[gitHubImport]
+requiredFiles = [".replit", "replit.nix"]
+
+[deployment]
+run = ["python3", "main.py"]
+deploymentTarget = "cloudrun"
+
+[agent]
+expertMode = true
