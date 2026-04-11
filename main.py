@@ -78,12 +78,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "*Supported:*\n"
-        "PDF ↔ DOCX\n"
-        "JPG ↔ PNG\n"
-        "IMG → PDF\n"
-        "PDF → IMG\n\n"
-        "Usage: Tap a command like /pdf2docx, then send the file.",
+        "*All supported formats:*\n\n"
+        "/pdf2docx - PDF → DOCX / Word\n"
+        "/docx2pdf - DOCX / Word → PDF\n"
+        "/jpg2png - JPG or JPEG → PNG\n"
+        "/png2jpg - PNG → JPG\n"
+        "/img2pdf - JPG, JPEG, or PNG → PDF\n"
+        "/pdf2img - PDF → PNG image(s)\n\n"
+        "Usage: Tap a command first, then upload your file.",
         parse_mode="Markdown",
     )
 
