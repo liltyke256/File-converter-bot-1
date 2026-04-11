@@ -121,8 +121,17 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Broadcast sent to {sent} user(s). Failed: {failed}.")
 
 
+async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+
+    await update.message.reply_text("Restarting bot now...")
+    await asyncio.sleep(1)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    message = (
         "*All supported formats:*\n\n"
         "/pdf2docx - PDF → DOCX / Word\n"
         "/docx2pdf - DOCX / Word → PDF\n"
@@ -133,7 +142,19 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/zip - Any uploaded files → ZIP archive\n"
         "/unzip - ZIP archive → extracted files\n\n"
         "For ZIP: tap /zip, upload one or more files, then tap /donezip.\n"
-        "Usage: Tap a command first, then upload your file.",
+        "Usage: Tap a command first, then upload your file."
+    )
+
+    if update.effective_user and is_admin(update.effective_user.id):
+        message += (
+            "\n\n*Admin commands:*\n"
+            "/stats - Show total users\n"
+            "/broadcast Your message - Send a message to users\n"
+            "/restart - Restart the bot process"
+        )
+
+    await update.message.reply_text(
+        message,
         parse_mode="Markdown",
     )
 
@@ -487,6 +508,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("zip", zip_cmd))
     app.add_handler(CommandHandler("donezip", done_zip))
