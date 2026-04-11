@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 import os
 import shutil
@@ -53,6 +54,9 @@ COMMANDS = {
     },
 }
 
+MAX_ZIP_FILES = 25
+MAX_UNZIP_FILES = 25
+
 logging.basicConfig(level=logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
@@ -61,6 +65,7 @@ logging.getLogger("telegram.ext").setLevel(logging.WARNING)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("mode", None)
+    context.user_data.pop("zip_files", None)
     await update.message.reply_text(
         "👋 *File Converter Bot*\n\n"
         "Commands:\n"
@@ -70,6 +75,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/png2jpg - PNG to JPG\n"
         "/img2pdf - Image to PDF\n"
         "/pdf2img - PDF to Image\n"
+        "/zip - Compress files into ZIP\n"
+        "/unzip - Extract ZIP files\n"
         "/help - All formats\n\n"
         "Send a command first, then upload your file.",
         parse_mode="Markdown",
@@ -84,7 +91,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/jpg2png - JPG or JPEG → PNG\n"
         "/png2jpg - PNG → JPG\n"
         "/img2pdf - JPG, JPEG, or PNG → PDF\n"
-        "/pdf2img - PDF → PNG image(s)\n\n"
+        "/pdf2img - PDF → PNG image(s)\n"
+        "/zip - Any uploaded files → ZIP archive\n"
+        "/unzip - ZIP archive → extracted files\n\n"
+        "For ZIP: tap /zip, upload one or more files, then tap /donezip.\n"
         "Usage: Tap a command first, then upload your file.",
         parse_mode="Markdown",
     )
@@ -93,16 +103,50 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     command = update.message.text.removeprefix("/").split()[0].lower()
     context.user_data["mode"] = command
+    context.user_data.pop("zip_files", None)
     details = COMMANDS[command]
     await update.message.reply_text(
         f"Send me the {details['input']} file to convert to {details['output']}."
     )
 
 
+async def zip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["mode"] = "zip"
+    context.user_data["zip_files"] = []
+    await update.message.reply_text(
+        "Send me the files you want to compress. When finished, send /donezip to receive the ZIP file."
+    )
+
+
+async def done_zip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    files = context.user_data.get("zip_files", [])
+    if not files:
+        await update.message.reply_text("No files added yet. Send /zip, upload files, then send /donezip.")
+        return
+
+    try:
+        zip_bytes = await asyncio.to_thread(create_zip_archive, files)
+        await update.message.reply_document(
+            document=io.BytesIO(zip_bytes),
+            filename="compressed-files.zip",
+        )
+        context.user_data.pop("mode", None)
+        context.user_data.pop("zip_files", None)
+        await update.message.reply_text("ZIP file created. Choose another command if you want to do more.")
+    except Exception as exc:
+        await update.message.reply_text(f"ZIP creation failed: {exc}")
+
+
+async def unzip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["mode"] = "unzip"
+    context.user_data.pop("zip_files", None)
+    await update.message.reply_text("Send me the ZIP file you want to extract.")
+
+
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get("mode")
     if not mode:
-        await update.message.reply_text("Please choose a command first, such as /pdf2docx or /jpg2png.")
+        await update.message.reply_text("Please choose a command first, such as /pdf2docx, /zip, or /unzip.")
         return
 
     source = await get_uploaded_file(update)
@@ -111,6 +155,15 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     telegram_file, filename = source
+
+    if mode == "zip":
+        await add_file_to_zip(update, context, telegram_file, filename)
+        return
+
+    if mode == "unzip":
+        await extract_uploaded_zip(update, context, telegram_file, filename)
+        return
+
     details = COMMANDS[mode]
     suffix = Path(filename).suffix.lower()
 
@@ -145,6 +198,108 @@ async def get_uploaded_file(update: Update):
         photo = message.photo[-1]
         return await photo.get_file(), "photo.jpg"
     return None
+
+
+async def add_file_to_zip(update: Update, context: ContextTypes.DEFAULT_TYPE, telegram_file, filename: str):
+    files = context.user_data.setdefault("zip_files", [])
+    if len(files) >= MAX_ZIP_FILES:
+        await update.message.reply_text(f"You can add up to {MAX_ZIP_FILES} files to one ZIP. Send /donezip now.")
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        input_path = Path(tmp) / safe_received_filename(filename)
+        await telegram_file.download_to_drive(custom_path=input_path)
+        files.append(
+            {
+                "filename": unique_archive_name([item["filename"] for item in files], input_path.name),
+                "content": input_path.read_bytes(),
+            }
+        )
+
+    await update.message.reply_text(
+        f"Added {files[-1]['filename']} to ZIP ({len(files)} file(s)). Send more files or /donezip."
+    )
+
+
+async def extract_uploaded_zip(update: Update, context: ContextTypes.DEFAULT_TYPE, telegram_file, filename: str):
+    if Path(filename).suffix.lower() != ".zip":
+        await update.message.reply_text("Please upload a .zip file for /unzip.")
+        return
+
+    await update.message.reply_text("Extracting your ZIP file now...")
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / "upload.zip"
+            await telegram_file.download_to_drive(custom_path=input_path)
+            output_paths = await asyncio.to_thread(extract_zip_archive, input_path, Path(tmp))
+
+            if not output_paths:
+                await update.message.reply_text("That ZIP file did not contain any files to extract.")
+                return
+
+            for output_path in output_paths:
+                with output_path.open("rb") as extracted_file:
+                    await update.message.reply_document(document=extracted_file, filename=output_path.name)
+
+        context.user_data.pop("mode", None)
+        await update.message.reply_text("ZIP extracted. Choose another command if you want to do more.")
+    except Exception as exc:
+        await update.message.reply_text(f"Unzip failed: {exc}")
+
+
+def safe_received_filename(filename: str) -> str:
+    name = Path(filename or "upload").name
+    return name or "upload"
+
+
+def unique_archive_name(existing_names: list[str], filename: str) -> str:
+    name = safe_received_filename(filename)
+    if name not in existing_names:
+        return name
+
+    path = Path(name)
+    stem = path.stem or "file"
+    suffix = path.suffix
+    counter = 2
+    while True:
+        candidate = f"{stem}-{counter}{suffix}"
+        if candidate not in existing_names:
+            return candidate
+        counter += 1
+
+
+def create_zip_archive(files: list[dict]) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        for item in files:
+            archive.writestr(item["filename"], item["content"])
+    return output.getvalue()
+
+
+def extract_zip_archive(input_path: Path, tmp_dir: Path) -> list[Path]:
+    output_dir = tmp_dir / "extracted"
+    output_dir.mkdir()
+    output_paths = []
+    names = []
+
+    with zipfile.ZipFile(input_path) as archive:
+        file_members = [info for info in archive.infolist() if not info.is_dir()]
+        if len(file_members) > MAX_UNZIP_FILES:
+            raise RuntimeError(f"This ZIP contains {len(file_members)} files. The limit is {MAX_UNZIP_FILES} files.")
+
+        for info in file_members:
+            filename = unique_archive_name(names, Path(info.filename.replace("\\", "/")).name)
+            if not filename:
+                continue
+
+            output_path = output_dir / filename
+            with archive.open(info) as source, output_path.open("wb") as target:
+                shutil.copyfileobj(source, target)
+            output_paths.append(output_path)
+            names.append(filename)
+
+    return output_paths
 
 
 def safe_filename(filename: str, mode: str) -> str:
@@ -270,6 +425,9 @@ def main():
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("zip", zip_cmd))
+    app.add_handler(CommandHandler("donezip", done_zip))
+    app.add_handler(CommandHandler("unzip", unzip_cmd))
 
     for command in COMMANDS:
         app.add_handler(CommandHandler(command, set_mode))
