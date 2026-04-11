@@ -1520,6 +1520,7 @@ dependencies = [
     { name = "pymupdf" },
     { name = "python-telegram-bot" },
     { name = "replit" },
+    { name = "telegram" },
 ]
 
 [package.metadata]
@@ -1530,6 +1531,7 @@ requires-dist = [
     { name = "pymupdf", specifier = ">=1.27.2.2" },
     { name = "python-telegram-bot", specifier = ">=22.7" },
     { name = "replit", specifier = ">=4.1.2" },
+    { name = "telegram", specifier = ">=0.0.1" },
 ]
 
 [[package]]
@@ -1568,6 +1570,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/5f/a4/98b9c7c6428a668bf
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d7/8e/7540e8a2036f79a125c1d2ebadf69ed7901608859186c856fa0388ef4197/requests-2.33.1-py3-none-any.whl", hash = "sha256:4e6d1ef462f3626a1f0a0a9c42dd93c63bad33f9f1c1937509b8c5c8718ab56a", size = 64947, upload-time = "2026-03-30T16:09:13.83Z" },
 ]
+
+[[package]]
+name = "telegram"
+version = "0.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9d/ca/8bdf2deb93b9f6971dabf2ddc827c2a98ce23e13582a15b37e9bc169f226/telegram-0.0.1.tar.gz", hash = "sha256:d405a0af4c868a8dbeae6d03e297e21c7ee6269e11e2ed3810e15544aba02591", size = 879, upload-time = "2015-09-29T07:32:18.348Z" }
 
 [[package]]
 name = "termcolor"

@@ -5,12 +5,16 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
 
-import fitz
 import img2pdf
+import pymupdf as fitz
+
+sys.modules["fitz"] = fitz
+
 from pdf2docx import Converter
 from PIL import Image
 from replit import db

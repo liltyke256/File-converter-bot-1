@@ -9,6 +9,6 @@ dependencies = [
     "pdf2docx>=0.5.12",
     "pillow>=12.2.0",
     "pymupdf>=1.27.2.2",
-    "python-telegram-bot>=22.7",
+    "python-telegram-bot==20.7",
     "replit>=4.1.2",
 ]
