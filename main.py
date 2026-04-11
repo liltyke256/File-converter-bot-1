@@ -99,6 +99,25 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📊 Total users: {total_users}")
 
 
+async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+
+    user_records = get_user_records()
+    if not user_records:
+        await update.message.reply_text("No users have been tracked yet.")
+        return
+
+    lines = ["Tracked users:"]
+    for user_id, last_seen in user_records[:50]:
+        lines.append(f"{user_id} - last /start: {last_seen}")
+
+    if len(user_records) > 50:
+        lines.append(f"...and {len(user_records) - 50} more.")
+
+    await update.message.reply_text("\n".join(lines))
+
+
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -149,6 +168,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += (
             "\n\n*Admin commands:*\n"
             "/stats - Show total users\n"
+            "/users - List tracked users\n"
             "/broadcast Your message - Send a message to users\n"
             "/restart - Restart the bot process"
         )
@@ -179,6 +199,15 @@ def track_user(update: Update):
 
 def get_user_ids() -> list[str]:
     return [key.removeprefix(USER_KEY_PREFIX) for key in db.keys() if str(key).startswith(USER_KEY_PREFIX)]
+
+
+def get_user_records() -> list[tuple[str, str]]:
+    records = []
+    for key in db.keys():
+        key = str(key)
+        if key.startswith(USER_KEY_PREFIX):
+            records.append((key.removeprefix(USER_KEY_PREFIX), str(db[key])))
+    return sorted(records, key=lambda item: item[1], reverse=True)
 
 
 async def set_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -507,6 +536,7 @@ def main():
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("users", users))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("help", help_cmd))
