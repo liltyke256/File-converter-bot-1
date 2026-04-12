@@ -690,17 +690,18 @@ wheels = [
 
 [[package]]
 name = "httpx"
-version = "0.28.1"
+version = "0.25.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "certifi" },
     { name = "httpcore" },
     { name = "idna" },
+    { name = "sniffio" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b1/df/48c586a5fe32a0f01324ee087459e112ebb7224f646c0b5023f5e79e9956/httpx-0.28.1.tar.gz", hash = "sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc", size = 141406, upload-time = "2024-12-06T15:37:23.222Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8c/23/911d93a022979d3ea295f659fbe7edb07b3f4561a477e83b3a6d0e0c914e/httpx-0.25.2.tar.gz", hash = "sha256:8b8fcaa0c8ea7b05edd69a094e63a2094c4efcb48129fb757361bc423c0ad9e8", size = 123889, upload-time = "2023-11-24T12:36:33.988Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl", hash = "sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad", size = 73517, upload-time = "2024-12-06T15:37:21.509Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/65/6940eeb21dcb2953778a6895281c179efd9100463ff08cb6232bb6480da7/httpx-0.25.2-py3-none-any.whl", hash = "sha256:a05d3d052d9b2dfce0e3896636467f8a5342fb2b902c819428e1ac65413ca118", size = 74980, upload-time = "2023-11-24T12:36:31.403Z" },
 ]
 
 [[package]]
@@ -1498,15 +1499,14 @@ wheels = [
 
 [[package]]
 name = "python-telegram-bot"
-version = "22.7"
+version = "20.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "httpcore", marker = "python_full_version >= '3.14'" },
     { name = "httpx" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e4/25/2258161b1069e66d6c39c0a602dbe57461d4767dc0012539970ea40bc9d6/python_telegram_bot-22.7.tar.gz", hash = "sha256:784b59ea3852fe4616ad63b4a0264c755637f5d725e87755ecdee28300febf61", size = 1516454, upload-time = "2026-03-16T09:36:03.174Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b6/63/80a61afea467e669edd91ca46de6800814227021e8ea040b87995979b52e/python-telegram-bot-20.7.tar.gz", hash = "sha256:4f146c39de5f5e0b3723c2abedaf78046ebd30a6a49d2281ee4b3af5eb116b68", size = 368874, upload-time = "2023-11-27T18:04:38.56Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/94/f7/0e2f89dd62f45d46d4ea0d8aec5893ce5b37389638db010c117f46f11450/python_telegram_bot-22.7-py3-none-any.whl", hash = "sha256:d72eed532cf763758cd9331b57a6d790aff0bb4d37d8f4e92149436fe21c6475", size = 745365, upload-time = "2026-03-16T09:36:01.498Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/69/285c31caff09a10ce932711a63835775ed7c503783bd808a837ce803f055/python_telegram_bot-20.7-py3-none-any.whl", hash = "sha256:462326c65671c8c39e76c8c96756ee918be6797d225f8db84d2ec0f883383b8c", size = 552646, upload-time = "2023-11-27T18:04:30.788Z" },
 ]
 
 [[package]]
@@ -1514,6 +1514,7 @@ name = "python-template"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "flask" },
     { name = "img2pdf" },
     { name = "pdf2docx" },
     { name = "pillow" },
@@ -1525,11 +1526,12 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "flask", specifier = ">=3.1.3" },
     { name = "img2pdf", specifier = ">=0.6.3" },
     { name = "pdf2docx", specifier = ">=0.5.12" },
     { name = "pillow", specifier = ">=12.2.0" },
     { name = "pymupdf", specifier = ">=1.27.2.2" },
-    { name = "python-telegram-bot", specifier = ">=22.7" },
+    { name = "python-telegram-bot", specifier = "==20.7" },
     { name = "replit", specifier = ">=4.1.2" },
     { name = "telegram", specifier = ">=0.0.1" },
 ]
@@ -1569,6 +1571,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5f/a4/98b9c7c6428a668bf7e42ebb7c79d576a1c3c1e3ae2d47e674b468388871/requests-2.33.1.tar.gz", hash = "sha256:18817f8c57c6263968bc123d237e3b8b08ac046f5456bd1e307ee8f4250d3517", size = 134120, upload-time = "2026-03-30T16:09:15.531Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d7/8e/7540e8a2036f79a125c1d2ebadf69ed7901608859186c856fa0388ef4197/requests-2.33.1-py3-none-any.whl", hash = "sha256:4e6d1ef462f3626a1f0a0a9c42dd93c63bad33f9f1c1937509b8c5c8718ab56a", size = 64947, upload-time = "2026-03-30T16:09:13.83Z" },
+]
+
+[[package]]
+name = "sniffio"
+version = "1.3.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a2/87/a6771e1546d97e7e041b6ae58d80074f81b7d5121207425c964ddf5cfdbd/sniffio-1.3.1.tar.gz", hash = "sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc", size = 20372, upload-time = "2024-02-25T23:20:04.057Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e9/44/75a9c9421471a6c4805dbf2356f7c181a29c1879239abab1ea2cc8f38b40/sniffio-1.3.1-py3-none-any.whl", hash = "sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2", size = 10235, upload-time = "2024-02-25T23:20:01.196Z" },
 ]
 
 [[package]]

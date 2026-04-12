@@ -9,7 +9,9 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from threading import Thread
 
+from flask import Flask
 import img2pdf
 import pymupdf as fitz
 
@@ -68,6 +70,26 @@ logging.basicConfig(level=logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+app = Flask("")
+
+
+@app.route("/")
+def home():
+    return "Bot is alive!"
+
+
+def run():
+    app.run(host="0.0.0.0", port=8080, use_reloader=False)
+
+
+def keep_alive():
+    t = Thread(target=run, daemon=True)
+    t.start()
+
+
+keep_alive()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
