@@ -1,0 +1,6 @@
+python-telegram-bot
+flask
+img2pdf
+pymupdf
+pdf2docx
+Pillow
