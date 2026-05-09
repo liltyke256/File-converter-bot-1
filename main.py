@@ -19,7 +19,7 @@ sys.modules["fitz"] = fitz
 
 from pdf2docx import Converter
 from PIL import Image
-from replit import db
+#from replit import db
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
