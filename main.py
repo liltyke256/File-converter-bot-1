@@ -29,12 +29,8 @@ DB_FILE = "bot_data.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # Table for tracking users
-    c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (user_id INTEGER PRIMARY KEY, last_seen TEXT)''')
-    # Table for daily usage (size in bytes)
-    c.execute('''CREATE TABLE IF NOT EXISTS usage 
-                 (user_id INTEGER, day TEXT, bytes_sent INTEGER, PRIMARY KEY (user_id, day))''')
+    c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, last_seen TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS usage (user_id INTEGER, day TEXT, bytes_sent INTEGER, PRIMARY KEY (user_id, day))''')
     conn.commit()
     conn.close()
 
@@ -53,21 +49,17 @@ def check_quota(user_id, file_size_bytes):
     c.execute("SELECT bytes_sent FROM usage WHERE user_id = ? AND day = ?", (user_id, today))
     row = c.fetchone()
     current_usage = row[0] if row else 0
-    
-    # 30MB limit = 30 * 1024 * 1024 bytes
-    MAX_DAILY = 30 * 1024 * 1024
+    MAX_DAILY = 30 * 1024 * 1024 # 30MB
     if current_usage + file_size_bytes > MAX_DAILY:
         conn.close()
         return False, current_usage
-    
     new_usage = current_usage + file_size_bytes
-    c.execute("INSERT OR REPLACE INTO usage (user_id, day, bytes_sent) VALUES (?, ?, ?)", 
-              (user_id, today, new_usage))
+    c.execute("INSERT OR REPLACE INTO usage (user_id, day, bytes_sent) VALUES (?, ?, ?)", (user_id, today, new_usage))
     conn.commit()
     conn.close()
     return True, new_usage
 
-# --- CONFIGURATION ---
+# --- CONFIG ---
 COMMANDS = {
     "pdf2docx": {"label": "PDF to Word", "input": "PDF", "output": "DOCX", "extensions": {".pdf"}},
     "docx2pdf": {"label": "Word to PDF", "input": "DOCX", "output": "PDF", "extensions": {".docx"}},
@@ -76,81 +68,68 @@ COMMANDS = {
     "img2pdf": {"label": "Image to PDF", "input": "JPG/PNG", "output": "PDF", "extensions": {".jpg", ".jpeg", ".png"}},
     "pdf2img": {"label": "PDF to Image", "input": "PDF", "output": "PNGs", "extensions": {".pdf"}},
 }
+MAX_FILE_SIZE = 20 * 1024 * 1024 # 20MB
 
-FILE_LIMIT_MB = 20
-MAX_FILE_SIZE = FILE_LIMIT_MB * 1024 * 1024  # 20MB in bytes
-
-logging.basicConfig(level=logging.WARNING)
 app = Flask("")
-
 @app.route("/")
-def home(): return "Bot is running perfectly!"
+def home(): return "Bot Online"
 
-def run(): app.run(host="0.0.0.0", port=8080)
-
-# --- BOT LOGIC ---
+# --- CORE FUNCTIONS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     track_user_db(user.id)
-    
-    welcome_text = (
-        f"Hello {user.first_name}! 🤖\n\n"
-        "I am your File Converter Bot. I can handle PDFs, Images, and ZIPs.\n\n"
-        "*Limits:*\n"
-        "• Max file size: 20MB\n"
-        "• Daily quota: 30MB total\n\n"
-        "*Commands:*\n"
-        "/pdf2docx, /docx2pdf, /img2pdf, /pdf2img\n"
-        "/zip, /unzip, /help\n\n"
-        "Select a command first, then send your file!"
+    await update.message.reply_text(
+        f"👋 Hello {user.first_name}!\n\n"
+        "I'm your **File Converter Bot**.\n"
+        "• Max file: 20MB\n"
+        "• Daily limit: 30MB\n\n"
+        "Choose a command:\n/pdf2docx, /docx2pdf, /img2pdf, /zip, /help",
+        parse_mode="Markdown"
     )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = "📖 *Help Menu*\nSelect a command, then upload your file.\n\n" + "\n".join([f"/{k} - {v['label']}" for k,v in COMMANDS.items()])
+    msg += "\n/zip - Create ZIP\n/unzip - Extract ZIP"
+    if user_id := update.effective_user.id:
+        if user_id == int(os.getenv("ADMIN_ID", 0)):
+            msg += "\n\n🛠 *Admin:* /stats, /users"
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def set_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    command = update.message.text.removeprefix("/").split()[0].lower()
+    context.user_data["mode"] = command
+    await update.message.reply_text(f"📥 Send the {COMMANDS[command]['input']} file.")
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get("mode")
     if not mode:
-        await update.message.reply_text("❌ Please select a command first (e.g., /pdf2docx)")
+        await update.message.reply_text("❌ Select a command first!")
         return
 
-    # Check File Size
     file_obj = update.message.document or (update.message.photo[-1] if update.message.photo else None)
     if not file_obj: return
 
-    actual_size = file_obj.file_size
-    if actual_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"⚠️ File too large! Maximum allowed is {FILE_LIMIT_MB}MB.")
+    if file_obj.file_size > MAX_FILE_SIZE:
+        await update.message.reply_text("⚠️ File too large (Max 20MB).")
         return
 
-    # Check Daily Quota
-    allowed, total_used = check_quota(update.effective_user.id, actual_size)
+    allowed, _ = check_quota(update.effective_user.id, file_obj.file_size)
     if not allowed:
-        await update.message.reply_text("🚫 Daily limit reached! You can only process 30MB per day.")
+        await update.message.reply_text("🚫 Daily limit (30MB) reached!")
         return
 
-    # Proceed to conversion (same logic as your previous script)
-    await update.message.reply_text("⚙️ Processing... please wait.")
+    await update.message.reply_text("⚙️ Processing...")
     
-    # [Internal logic for conversion continues here as in your source...]
-    # For brevity, calling your existing conversion handlers here
-    source = await get_uploaded_file(update)
-    if source:
-        telegram_file, filename = source
-        if mode == "zip": await add_file_to_zip(update, context, telegram_file, filename)
-        elif mode == "unzip": await extract_uploaded_zip(update, context, telegram_file, filename)
-        else: await perform_conversion(update, context, mode, telegram_file, filename)
+    # Logic for file retrieval
+    tg_file = await file_obj.get_file()
+    fname = getattr(file_obj, "file_name", "photo.jpg")
 
-async def perform_conversion(update, context, mode, telegram_file, filename):
-    details = COMMANDS.get(mode)
-    if not details: return
-    suffix = Path(filename).suffix.lower()
-    if suffix not in details["extensions"]:
-        await update.message.reply_text(f"❌ Invalid format for {mode}")
-        return
-        
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            input_path = Path(tmp) / safe_filename(filename, mode)
-            await telegram_file.download_to_drive(custom_path=input_path)
+            input_path = Path(tmp) / f"input{Path(fname).suffix or '.jpg'}"
+            await tg_file.download_to_drive(custom_path=input_path)
+            
+            # Conversion logic
             output_paths = await asyncio.to_thread(convert_file, mode, input_path, Path(tmp))
             for out in output_paths:
                 with out.open("rb") as f:
@@ -159,59 +138,55 @@ async def perform_conversion(update, context, mode, telegram_file, filename):
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
-# --- ADMIN COMMANDS ---
+# --- CONVERSION HELPERS ---
+def convert_file(mode, input_path, tmp_dir):
+    if mode == "pdf2docx":
+        out = tmp_dir / "converted.docx"
+        cv = Converter(str(input_path))
+        cv.convert(str(out)); cv.close()
+        return [out]
+    if mode == "docx2pdf":
+        office = shutil.which("libreoffice") or shutil.which("soffice")
+        subprocess.run([office, "--headless", "--convert-to", "pdf", "--outdir", str(tmp_dir), str(input_path)], check=True)
+        return [tmp_dir / f"{input_path.stem}.pdf"]
+    if mode == "img2pdf":
+        out = tmp_dir / "converted.pdf"
+        out.write_bytes(img2pdf.convert(str(input_path)))
+        return [out]
+    # Add other simple image conversions here as needed
+    return []
+
+# --- ADMIN ---
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+    if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM users")
-    total = c.fetchone()[0]
-    conn.close()
-    await update.message.reply_text(f"📊 *Bot Statistics*\nTotal Users: {total}", parse_mode="Markdown")
+    count = c.fetchone()[0]; conn.close()
+    await update.message.reply_text(f"📊 Total Users: {count}")
 
-async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT user_id, last_seen FROM users LIMIT 20")
-    rows = c.fetchall()
-    conn.close()
-    msg = "\n".join([f"ID: `{r[0]}` | Last: {r[1]}" for r in rows])
-    await update.message.reply_text(f"👥 *Recent Users:*\n{msg}", parse_mode="Markdown")
-
-# [Helper functions: get_uploaded_file, convert_file, etc. remain the same as your source]
-# (Include your existing helper functions here to complete the script)
-
-def get_admin_id() -> int:
-    return int(os.getenv("ADMIN_ID", 0))
-
-def is_admin(user_id: int) -> bool:
-    return user_id == get_admin_id()
-
-# --- RE-INSERT YOUR REMAINING HELPER FUNCTIONS HERE ---
-# (convert_pdf_to_docx, convert_docx_to_pdf, etc.)
-
+# --- MAIN ---
 def main():
     init_db()
     token = os.getenv("BOT_TOKEN")
-    Thread(target=run, daemon=True).start()
+    admin = os.getenv("ADMIN_ID")
+    if not token or not admin:
+        print("Missing BOT_TOKEN or ADMIN_ID!")
+        return
+
+    Thread(target=lambda: app.run(host="0.0.0.0", port=8080), daemon=True).start()
     
-    app = Application.builder().token(token).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("users", users_list))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("zip", zip_cmd))
-    app.add_handler(CommandHandler("donezip", done_zip))
-    app.add_handler(CommandHandler("unzip", unzip_cmd))
+    bot_app = Application.builder().token(token).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("help", help_cmd))
+    bot_app.add_handler(CommandHandler("stats", stats))
     
     for cmd in COMMANDS:
-        app.add_handler(CommandHandler(cmd, set_mode))
+        bot_app.add_handler(CommandHandler(cmd, set_mode))
         
-    app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
+    bot_app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
     
-    print("Railway Bot Online...")
-    app.run_polling()
+    print("Bot is Starting...")
+    bot_app.run_polling()
 
 if __name__ == "__main__":
     main()
