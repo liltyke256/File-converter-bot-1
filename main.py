@@ -18,6 +18,7 @@ import pymupdf as fitz
 
 sys.modules["fitz"] = fitz
 
+from fpdf import FPDF
 from pdf2docx import Converter
 from PIL import Image
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -67,7 +68,8 @@ COMMANDS = {
     "png2jpg": {"label": "PNG to JPG", "input": "PNG", "output": "JPG", "extensions": {".png"}},
     "img2pdf": {"label": "Image to PDF", "input": "JPG/PNG", "output": "PDF", "extensions": {".jpg", ".jpeg", ".png"}},
     "pdf2img": {"label": "PDF to Image", "input": "PDF", "output": "PNGs", "extensions": {".pdf"}},
-    
+    "txt2pdf": {"label": "Text to PDF", "input": "TXT", "output": "PDF", "extensions": {".txt"}},
+
     # New Image Extensions
     "heic2jpg": {"label": "HEIC to JPG", "input": "HEIC", "output": "JPG", "extensions": {".heic"}},
     "gif2png": {"label": "GIF to PNG", "input": "GIF", "output": "PNG", "extensions": {".gif"}},
@@ -227,6 +229,18 @@ def convert_file(mode, input_path, tmp_dir):
         out = tmp_dir / "converted.pdf"
         out.write_bytes(img2pdf.convert(str(input_path)))
         return [out]
+    
+# Inside the convert_file(mode, input_path, tmp_dir)
+    if mode == "txt2pdf":
+        out = tmp_dir / "converted.pdf"
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    with open(input_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            pdf.cell(200, 10, txt=line, ln=True, align='L')
+    pdf.output(str(out))
+    return [out]
 
     # ZIP / UNZIP Logic Implementation
     if mode == "zip":
