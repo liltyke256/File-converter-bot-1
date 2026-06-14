@@ -63,7 +63,7 @@ def check_quota(user_id, file_size_bytes):
 # --- CONFIG ---
 COMMANDS = {
     "pdf2docx": {"label": "PDF to Word", "input": "PDF", "output": "DOCX", "extensions": {".pdf"}},
-    "docx2pdf": {"label": "Word to PDF", "input": "DOCX", "output": "PDF", "extensions": {".docx"}},
+    "docx2pdf": {"word to PDF": "DOCX", "input": "DOCX", "output": "PDF", "extensions": {".docx"}},
     "jpg2png": {"label": "JPG to PNG", "input": "JPG/JPEG", "output": "PNG", "extensions": {".jpg", ".jpeg"}},
     "png2jpg": {"label": "PNG to JPG", "input": "PNG", "output": "JPG", "extensions": {".png"}},
     "img2pdf": {"label": "Image to PDF", "input": "JPG/PNG", "output": "PDF", "extensions": {".jpg", ".jpeg", ".png"}},
@@ -73,7 +73,7 @@ COMMANDS = {
     # New Image Extensions
     "heic2jpg": {"label": "HEIC to JPG", "input": "HEIC", "output": "JPG", "extensions": {".heic"}},
     "gif2png": {"label": "GIF to PNG", "input": "GIF", "output": "PNG", "extensions": {".gif"}},
-    
+
     # New Audio Extensions
     "mp32wav": {"label": "MP3 to WAV", "input": "MP3", "output": "WAV", "extensions": {".mp3"}},
     "wav2mp3": {"label": "WAV to MP3", "input": "WAV", "output": "MP3", "extensions": {".wav"}},
@@ -99,7 +99,7 @@ def get_main_keyboard():
         if i + 1 < len(keys):
             row.append(InlineKeyboardButton(COMMANDS[keys[i+1]]["label"], callback_data=f"mode_{keys[i+1]}"))
         keyboard.append(row)
-    
+
     keyboard.append([
         InlineKeyboardButton("📦 Create ZIP", callback_data="mode_zip"),
         InlineKeyboardButton("🔓 Extract ZIP", callback_data="mode_unzip")
@@ -110,7 +110,7 @@ def get_main_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     track_user_db(user.id)
-    
+
     intro_text = (
         f"🚀 **Welcome to your ultimate File Converter Bot, {user.first_name}!**\n\n"
         "Transform documents, conversions, and files instantly using the responsive dashboard menu below.\n\n"
@@ -119,7 +119,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Daily bandwidth cap: **30MB**\n\n"
         "👇 *Please select your desired file conversion protocol:* "
     )
-    
+
     await update.message.reply_text(
         text=intro_text,
         parse_mode="Markdown",
@@ -130,10 +130,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     msg = "📖 *Help Menu*\nSelect an action from the main interface button layout, then upload your file.\n\n" + "\n".join([f"• {v['label']}" for v in COMMANDS.values()])
     msg += "\n• Create ZIP\n• Extract ZIP"
-    
+
     if user_id == int(os.getenv("ADMIN_ID", 0)):
         msg += "\n\n🛠 *Admin Commands Available:* \n👉 /stats — View overall bot metrics\n👉 /users — View list of database users\n👉 /broadcast <msg> — Broadcast to users\n👉 /shutdown — Power down bot"
-        
+
     if update.message:
         await update.message.reply_text(msg, parse_mode="Markdown")
     elif update.callback_query:
@@ -142,12 +142,12 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer(text="🔄 Processing action...", show_alert=False)
-    
+
     data = query.data
     if data.startswith("mode_"):
         chosen_mode = data.replace("mode_", "")
         context.user_data["mode"] = chosen_mode
-        
+
         if chosen_mode in COMMANDS:
             label = COMMANDS[chosen_mode]["label"]
             input_fmt = COMMANDS[chosen_mode]["input"]
@@ -158,7 +158,7 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
             text = "📥 *Selected:* UNZIP Utility\n\nPlease send your **.zip** file now."
         else:
             text = f"📥 *Selected:* {chosen_mode.upper()} Utility\n\nPlease send your file now."
-            
+
         await query.message.reply_text(text=text, parse_mode="Markdown")
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -198,13 +198,13 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await tg_file.download_to_drive(custom_path=input_path)
 
             output_paths = await asyncio.to_thread(convert_file, mode, input_path, Path(tmp))
-            
+
             await status_msg.edit_text("📤 `[▓▓▓▓▓▓▓▓▓▓] 100%` *Uploading outputs to Telegram...*", parse_mode="Markdown")
-            
+
             for out in output_paths:
                 with out.open("rb") as f:
                     await update.message.reply_document(document=f, filename=out.name)
-            
+
             await status_msg.delete()
             await update.message.reply_text("✅ *Conversion complete and successfully processed!*", parse_mode="Markdown", reply_markup=get_main_keyboard())
     except Exception as e:
@@ -229,18 +229,18 @@ def convert_file(mode, input_path, tmp_dir):
         out = tmp_dir / "converted.pdf"
         out.write_bytes(img2pdf.convert(str(input_path)))
         return [out]
-    
-# Inside the convert_file(mode, input_path, tmp_dir)
+
+    # Inside the convert_file(mode, input_path, tmp_dir)
     if mode == "txt2pdf":
         out = tmp_dir / "converted.pdf"
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    with open(input_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            pdf.cell(200, 10, txt=line, ln=True, align='L')
-    pdf.output(str(out))
-    return [out]
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        with open(input_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                pdf.cell(200, 10, txt=line, ln=True, align='L')
+        pdf.output(str(out))
+        return [out]
 
     # ZIP / UNZIP Logic Implementation
     if mode == "zip":
@@ -248,7 +248,7 @@ def convert_file(mode, input_path, tmp_dir):
         with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as zipf:
             zipf.write(input_path, arcname=input_path.name)
         return [out]
-        
+
     if mode == "unzip":
         if not zipfile.is_zipfile(input_path):
             raise Exception("The provided file is not a valid zip compression archive.")
@@ -263,7 +263,7 @@ def convert_file(mode, input_path, tmp_dir):
         target_ext = list(COMMANDS[mode]["extensions"])[0] if "extensions" in COMMANDS[mode] else None
         output_fmt = COMMANDS[mode]["output"].lower()
         out = tmp_dir / f"converted.{output_fmt}"
-        
+
         # Image Engine conversions
         if mode in ["jpg2png", "png2jpg", "heic2jpg", "gif2png", "pdf2img"]:
             if mode == "pdf2img":
@@ -304,44 +304,44 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
-    
+
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT user_id, last_seen FROM users ORDER BY last_seen DESC")
     rows = c.fetchall()
     conn.close()
-    
+
     if not rows:
         await update.message.reply_text("📁 No registered user tracking logs discovered inside local database.")
         return
-        
+
     msg = "👥 *Database User Directory Logs:*\n\n"
     for idx, row in enumerate(rows, 1):
         msg += f"{idx}. ID: `{row[0]}` | Last Seen: `{row[1]}`\n"
         if len(msg) > 3500:
             msg += "\n...Truncated due to limits..."
             break
-            
+
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Broadcast system messages to all registered users inside DB"""
     if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
-    
+
     if not context.args:
         await update.message.reply_text("❌ Please format message string payload: `/broadcast Your text content here`", parse_mode="Markdown")
         return
-        
+
     broadcast_msg = " ".join(context.args)
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT user_id FROM users")
     users = c.fetchall()
     conn.close()
-    
+
     success, failure = 0, 0
     await update.message.reply_text(f"📢 Starting broadcast sequence to {len(users)} users...")
-    
+
     for user in users:
         try:
             await context.bot.send_message(chat_id=user[0], text=broadcast_msg, parse_mode="Markdown")
@@ -349,13 +349,13 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(0.05)
         except Exception:
             failure += 1
-            
+
     await update.message.reply_text(f"✅ *Broadcast completed!*\n• Successful deliveries: `{success}`\n• Failed deliveries: `{failure}`", parse_mode="Markdown")
 
 async def shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Safely terminate polling sequences remotely"""
     if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
-    
+
     await update.message.reply_text("🛑 *Power down execution payload received. Stopping application loops...*", parse_mode="Markdown")
     os._exit(0)
 
@@ -371,7 +371,7 @@ def main():
     Thread(target=lambda: app.run(host="0.0.0.0", port=8080), daemon=True).start()
 
     bot_app = Application.builder().token(token).build()
-    
+
     # Handlers Configuration
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("help", help_cmd))
@@ -379,9 +379,9 @@ def main():
     bot_app.add_handler(CommandHandler("users", users_cmd))
     bot_app.add_handler(CommandHandler("broadcast", broadcast))
     bot_app.add_handler(CommandHandler("shutdown", shutdown))
-    
+
     bot_app.add_handler(CallbackQueryHandler(inline_button_handler))
-    
+
     # Process documents, photos, audio, voices, and videos
     bot_app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.AUDIO | filters.VOICE | filters.VIDEO, handle_file))
 
