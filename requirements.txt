@@ -4,3 +4,4 @@ img2pdf
 pymupdf
 pdf2docx
 Pillow
+fpdf
