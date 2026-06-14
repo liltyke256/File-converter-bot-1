@@ -78,6 +78,9 @@ COMMANDS = {
     "m4a2mp3": {"label": "M4A to MP3", "input": "M4A", "output": "MP3", "extensions": {".m4a"}},
     "flac2mp3": {"label": "FLAC to MP3", "input": "FLAC", "output": "MP3", "extensions": {".flac"}},
     "ogg2mp3": {"label": "OGG to MP3", "input": "OGG", "output": "MP3", "extensions": {".ogg"}},
+
+    # Video Extensions
+    "mp42mp3": {"label": "Video to Audio", "input": "MP4", "output": "MP3", "extensions": {".mp4"}},
 }
 MAX_FILE_SIZE = 20 * 1024 * 1024 # 20MB
 
@@ -162,7 +165,13 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Select a command operation using the menu options first!", reply_markup=get_main_keyboard())
         return
 
-    file_obj = update.message.document or update.message.audio or update.message.voice or (update.message.photo[-1] if update.message.photo else None)
+    file_obj = (
+        update.message.document or 
+        update.message.audio or 
+        update.message.voice or 
+        update.message.video or 
+        (update.message.photo[-1] if update.message.photo else None)
+    )
     if not file_obj: return
 
     if file_obj.file_size > MAX_FILE_SIZE:
@@ -177,7 +186,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("⏳ `[▓░░░░░░░░░] 10%` *Downloading target file from cloud servers...*", parse_mode="Markdown")
 
     tg_file = await file_obj.get_file()
-    fname = getattr(file_obj, "file_name", "photo.jpg")
+    fname = getattr(file_obj, "file_name", "file.mp4" if update.message.video else "photo.jpg")
 
     await status_msg.edit_text("⚙️ `[▓▓▓▓▓▓░░░░] 60%` *Running conversion protocols...*", parse_mode="Markdown")
 
@@ -253,7 +262,6 @@ def convert_file(mode, input_path, tmp_dir):
                     images.append(p_out)
                 return images
             else:
-                # Require external dynamic imports for specialized libraries if needed
                 if input_path.suffix.lower() == '.heic':
                     from pillow_heif import register_heif_opener
                     register_heif_opener()
@@ -263,9 +271,9 @@ def convert_file(mode, input_path, tmp_dir):
                 img.save(out, format=output_fmt.upper() if output_fmt != "jpg" else "JPEG")
                 return [out]
 
-        # Audio Engine conversions (requires ffmpeg executable system binary dependencies)
+        # Audio Engine & Video extraction conversions (requires ffmpeg executable binary dependencies)
         if output_fmt in ["wav", "mp3"]:
-            subprocess.run(["ffmpeg", "-y", "-i", str(input_path), str(out)], check=True)
+            subprocess.run(["ffmpeg", "-y", "-i", str(input_path), "-vn", str(out)], check=True)
             return [out]
 
     return []
@@ -324,7 +332,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(chat_id=user[0], text=broadcast_msg, parse_mode="Markdown")
             success += 1
-            await asyncio.sleep(0.05) # Prevent triggering flood limit rules
+            await asyncio.sleep(0.05)
         except Exception:
             failure += 1
             
@@ -360,8 +368,8 @@ def main():
     
     bot_app.add_handler(CallbackQueryHandler(inline_button_handler))
     
-    # Updated document filters to process voice, audio, and all document types including archives natively
-    bot_app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.AUDIO | filters.VOICE, handle_file))
+    # Process documents, photos, audio, voices, and videos
+    bot_app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.AUDIO | filters.VOICE | filters.VIDEO, handle_file))
 
     print("Bot service initialization sequence success... Polling telegram API.")
     bot_app.run_polling()
