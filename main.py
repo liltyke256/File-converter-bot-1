@@ -24,6 +24,9 @@ from PIL import Image
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
 
+# Setup basic logging to see issues in Railway logs
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
 # --- DATABASE SETUP ---
 DB_FILE = "bot_data.db"
 
@@ -63,7 +66,7 @@ def check_quota(user_id, file_size_bytes):
 # --- CONFIG ---
 COMMANDS = {
     "pdf2docx": {"label": "PDF to Word", "input": "PDF", "output": "DOCX", "extensions": {".pdf"}},
-    "docx2pdf": {"word to PDF": "DOCX", "input": "DOCX", "output": "PDF", "extensions": {".docx"}},
+    "docx2pdf": {"label": "Word to PDF", "input": "DOCX", "output": "PDF", "extensions": {".docx"}},
     "jpg2png": {"label": "JPG to PNG", "input": "JPG/JPEG", "output": "PNG", "extensions": {".jpg", ".jpeg"}},
     "png2jpg": {"label": "PNG to JPG", "input": "PNG", "output": "JPG", "extensions": {".png"}},
     "img2pdf": {"label": "Image to PDF", "input": "JPG/PNG", "output": "PDF", "extensions": {".jpg", ".jpeg", ".png"}},
@@ -365,7 +368,7 @@ def main():
     token = os.getenv("BOT_TOKEN")
     admin = os.getenv("ADMIN_ID")
     if not token or not admin:
-        print("CRITICAL LOG ERROR: Missing BOT_TOKEN or ADMIN_ID environment entries!")
+        print("CRITICAL LOG ERROR: Missing BOT_TOKEN or ADMIN_ID environment variables inside Railway config!")
         return
 
     Thread(target=lambda: app.run(host="0.0.0.0", port=8080), daemon=True).start()
