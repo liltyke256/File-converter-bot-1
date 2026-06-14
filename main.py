@@ -67,6 +67,17 @@ COMMANDS = {
     "png2jpg": {"label": "PNG to JPG", "input": "PNG", "output": "JPG", "extensions": {".png"}},
     "img2pdf": {"label": "Image to PDF", "input": "JPG/PNG", "output": "PDF", "extensions": {".jpg", ".jpeg", ".png"}},
     "pdf2img": {"label": "PDF to Image", "input": "PDF", "output": "PNGs", "extensions": {".pdf"}},
+    
+    # New Image Extensions
+    "heic2jpg": {"label": "HEIC to JPG", "input": "HEIC", "output": "JPG", "extensions": {".heic"}},
+    "gif2png": {"label": "GIF to PNG", "input": "GIF", "output": "PNG", "extensions": {".gif"}},
+    
+    # New Audio Extensions
+    "mp32wav": {"label": "MP3 to WAV", "input": "MP3", "output": "WAV", "extensions": {".mp3"}},
+    "wav2mp3": {"label": "WAV to MP3", "input": "WAV", "output": "MP3", "extensions": {".wav"}},
+    "m4a2mp3": {"label": "M4A to MP3", "input": "M4A", "output": "MP3", "extensions": {".m4a"}},
+    "flac2mp3": {"label": "FLAC to MP3", "input": "FLAC", "output": "MP3", "extensions": {".flac"}},
+    "ogg2mp3": {"label": "OGG to MP3", "input": "OGG", "output": "MP3", "extensions": {".ogg"}},
 }
 MAX_FILE_SIZE = 20 * 1024 * 1024 # 20MB
 
@@ -77,7 +88,6 @@ def home(): return "Bot Online"
 # --- UI KEYBOARD CREATOR ---
 def get_main_keyboard():
     keyboard = []
-    # Dynamic 2-column layout for standard tools
     keys = list(COMMANDS.keys())
     for i in range(0, len(keys), 2):
         row = [InlineKeyboardButton(COMMANDS[keys[i]]["label"], callback_data=f"mode_{keys[i]}")]
@@ -85,7 +95,6 @@ def get_main_keyboard():
             row.append(InlineKeyboardButton(COMMANDS[keys[i+1]]["label"], callback_data=f"mode_{keys[i+1]}"))
         keyboard.append(row)
     
-    # Extra feature buttons row
     keyboard.append([
         InlineKeyboardButton("📦 Create ZIP", callback_data="mode_zip"),
         InlineKeyboardButton("🔓 Extract ZIP", callback_data="mode_unzip")
@@ -118,7 +127,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "\n• Create ZIP\n• Extract ZIP"
     
     if user_id == int(os.getenv("ADMIN_ID", 0)):
-        msg += "\n\n🛠 *Admin Commands Available:* \n👉 /stats — View overall bot metrics\n👉 /users — View list of database users"
+        msg += "\n\n🛠 *Admin Commands Available:* \n👉 /stats — View overall bot metrics\n👉 /users — View list of database users\n👉 /broadcast <msg> — Broadcast to users\n👉 /shutdown — Power down bot"
         
     if update.message:
         await update.message.reply_text(msg, parse_mode="Markdown")
@@ -127,18 +136,21 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer(text="🔄 Processing action...", show_alert=False) # Visual pop top flash
+    await query.answer(text="🔄 Processing action...", show_alert=False)
     
     data = query.data
     if data.startswith("mode_"):
         chosen_mode = data.replace("mode_", "")
         context.user_data["mode"] = chosen_mode
         
-        # Displaying instructions cleanly to user
         if chosen_mode in COMMANDS:
             label = COMMANDS[chosen_mode]["label"]
             input_fmt = COMMANDS[chosen_mode]["input"]
             text = f"📥 *Selected:* {label}\n\nPlease attach your **{input_fmt}** file right now. I am listening..."
+        elif chosen_mode == "zip":
+            text = "📥 *Selected:* ZIP Archive Creation Utility\n\nPlease send the file you want to compress into a ZIP file."
+        elif chosen_mode == "unzip":
+            text = "📥 *Selected:* UNZIP Utility\n\nPlease send your **.zip** file now."
         else:
             text = f"📥 *Selected:* {chosen_mode.upper()} Utility\n\nPlease send your file now."
             
@@ -150,7 +162,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Select a command operation using the menu options first!", reply_markup=get_main_keyboard())
         return
 
-    file_obj = update.message.document or (update.message.photo[-1] if update.message.photo else None)
+    file_obj = update.message.document or update.message.audio or update.message.voice or (update.message.photo[-1] if update.message.photo else None)
     if not file_obj: return
 
     if file_obj.file_size > MAX_FILE_SIZE:
@@ -162,7 +174,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 Daily limit constraint reached! (30MB daily limit max).")
         return
 
-    # Visual representation of a long running load state
     status_msg = await update.message.reply_text("⏳ `[▓░░░░░░░░░] 10%` *Downloading target file from cloud servers...*", parse_mode="Markdown")
 
     tg_file = await file_obj.get_file()
@@ -172,7 +183,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            input_path = Path(tmp) / f"input{Path(fname).suffix or '.jpg'}"
+            input_path = Path(tmp) / fname
             await tg_file.download_to_drive(custom_path=input_path)
 
             output_paths = await asyncio.to_thread(convert_file, mode, input_path, Path(tmp))
@@ -183,13 +194,14 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 with out.open("rb") as f:
                     await update.message.reply_document(document=f, filename=out.name)
             
-            await status_msg.delete() # Cleans up visual logs out of history cleanly
+            await status_msg.delete()
             await update.message.reply_text("✅ *Conversion complete and successfully processed!*", parse_mode="Markdown", reply_markup=get_main_keyboard())
     except Exception as e:
         await status_msg.edit_text(f"❌ *Engine Error raised during conversion operation:* \n`{str(e)}`", parse_mode="Markdown")
 
 # --- CONVERSION HELPERS ---
 def convert_file(mode, input_path, tmp_dir):
+    # Standard document conversions
     if mode == "pdf2docx":
         out = tmp_dir / "converted.docx"
         cv = Converter(str(input_path))
@@ -206,9 +218,59 @@ def convert_file(mode, input_path, tmp_dir):
         out = tmp_dir / "converted.pdf"
         out.write_bytes(img2pdf.convert(str(input_path)))
         return [out]
+
+    # ZIP / UNZIP Logic Implementation
+    if mode == "zip":
+        out = tmp_dir / f"{input_path.stem}.zip"
+        with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(input_path, arcname=input_path.name)
+        return [out]
+        
+    if mode == "unzip":
+        if not zipfile.is_zipfile(input_path):
+            raise Exception("The provided file is not a valid zip compression archive.")
+        extract_dir = tmp_dir / "extracted_files"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(input_path, 'r') as zipf:
+            zipf.extractall(extract_dir)
+        return [p for p in extract_dir.rglob('*') if p.is_file()]
+
+    # Universal Image & Audio conversion handling using Pillow and FFMPEG
+    if mode in COMMANDS:
+        target_ext = list(COMMANDS[mode]["extensions"])[0] if "extensions" in COMMANDS[mode] else None
+        output_fmt = COMMANDS[mode]["output"].lower()
+        out = tmp_dir / f"converted.{output_fmt}"
+        
+        # Image Engine conversions
+        if mode in ["jpg2png", "png2jpg", "heic2jpg", "gif2png", "pdf2img"]:
+            if mode == "pdf2img":
+                doc = fitz.open(input_path)
+                images = []
+                for i, page in enumerate(doc):
+                    pix = page.get_pixmap()
+                    p_out = tmp_dir / f"page_{i+1}.png"
+                    pix.save(str(p_out))
+                    images.append(p_out)
+                return images
+            else:
+                # Require external dynamic imports for specialized libraries if needed
+                if input_path.suffix.lower() == '.heic':
+                    from pillow_heif import register_heif_opener
+                    register_heif_opener()
+                img = Image.open(input_path)
+                if output_fmt == "jpg" and img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                img.save(out, format=output_fmt.upper() if output_fmt != "jpg" else "JPEG")
+                return [out]
+
+        # Audio Engine conversions (requires ffmpeg executable system binary dependencies)
+        if output_fmt in ["wav", "mp3"]:
+            subprocess.run(["ffmpeg", "-y", "-i", str(input_path), str(out)], check=True)
+            return [out]
+
     return []
 
-# --- ADMIN PANEL REPAIRS ---
+# --- ADMIN PANEL FUNCTIONS ---
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
     conn = sqlite3.connect(DB_FILE)
@@ -219,7 +281,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📊 *Admin Metrics:* Total Registered Users = `{count}`", parse_mode="Markdown")
 
 async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Fixed non-functioning /users command callback"""
     if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
     
     conn = sqlite3.connect(DB_FILE)
@@ -235,11 +296,46 @@ async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = "👥 *Database User Directory Logs:*\n\n"
     for idx, row in enumerate(rows, 1):
         msg += f"{idx}. ID: `{row[0]}` | Last Seen: `{row[1]}`\n"
-        if len(msg) > 3500: # Breaks iteration loops to prevent crashing against maximum message size limits
+        if len(msg) > 3500:
             msg += "\n...Truncated due to limits..."
             break
             
     await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Broadcast system messages to all registered users inside DB"""
+    if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Please format message string payload: `/broadcast Your text content here`", parse_mode="Markdown")
+        return
+        
+    broadcast_msg = " ".join(context.args)
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users")
+    users = c.fetchall()
+    conn.close()
+    
+    success, failure = 0, 0
+    await update.message.reply_text(f"📢 Starting broadcast sequence to {len(users)} users...")
+    
+    for user in users:
+        try:
+            await context.bot.send_message(chat_id=user[0], text=broadcast_msg, parse_mode="Markdown")
+            success += 1
+            await asyncio.sleep(0.05) # Prevent triggering flood limit rules
+        except Exception:
+            failure += 1
+            
+    await update.message.reply_text(f"✅ *Broadcast completed!*\n• Successful deliveries: `{success}`\n• Failed deliveries: `{failure}`", parse_mode="Markdown")
+
+async def shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Safely terminate polling sequences remotely"""
+    if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
+    
+    await update.message.reply_text("🛑 *Power down execution payload received. Stopping application loops...*", parse_mode="Markdown")
+    os._exit(0)
 
 # --- MAIN RUNNER ---
 def main():
@@ -258,13 +354,14 @@ def main():
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("help", help_cmd))
     bot_app.add_handler(CommandHandler("stats", stats))
-    bot_app.add_handler(CommandHandler("users", users_cmd)) # Registered the previously missing hook!
+    bot_app.add_handler(CommandHandler("users", users_cmd))
+    bot_app.add_handler(CommandHandler("broadcast", broadcast))
+    bot_app.add_handler(CommandHandler("shutdown", shutdown))
     
-    # Process inline keyboard interactions
     bot_app.add_handler(CallbackQueryHandler(inline_button_handler))
     
-    # Processing global attachments pipeline
-    bot_app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file))
+    # Updated document filters to process voice, audio, and all document types including archives natively
+    bot_app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.AUDIO | filters.VOICE, handle_file))
 
     print("Bot service initialization sequence success... Polling telegram API.")
     bot_app.run_polling()
