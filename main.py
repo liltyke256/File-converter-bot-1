@@ -120,7 +120,7 @@ def get_categories_keyboard():
     keyboard = [
         [InlineKeyboardButton("📄 Documents", callback_data="cat_doc"), InlineKeyboardButton("🖼 Images", callback_data="cat_img")],
         [InlineKeyboardButton("🎵 Audio", callback_data="cat_audio"), InlineKeyboardButton("🎥 Video tools", callback_data="cat_video")],
-        [InlineKeyboardButton("📦 Archive Utilities", callback_data="cat_zip"), InlineKeyboardButton("🔍 Search Tools", callback_data="cat_search")],
+        [InlineKeyboardButton("📦 Archive Utilities", callback_data="cat_zip")],
         [InlineKeyboardButton("👥 My Referral Link", callback_data="ui_invite")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -136,8 +136,6 @@ def get_category_tools_keyboard(category):
             keyboard.append(row)
     elif category == "zip":
         keyboard.append([InlineKeyboardButton("📦 Create ZIP", callback_data="mode_zip"), InlineKeyboardButton("🔓 Extract ZIP", callback_data="mode_unzip")])
-    elif category == "search":
-        keyboard.append([InlineKeyboardButton("🌐 Wikipedia Search", callback_data="ui_wiki")])
 
     keyboard.append([InlineKeyboardButton("⬅️ Back to Categories", callback_data="cat_back")])
     return InlineKeyboardMarkup(keyboard)
@@ -180,8 +178,314 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Audio processing engine\n"
         "• Video extraction tools\n"
         "• Zip / Unzip tools\n"
-        "• /wiki <query> — Instantly search Wikipedia items\n"
     )
 
     if user_id == int(os.getenv("ADMIN_ID", 0)):
-        msg
+        msg += "\n🛠 *Admin Commands Available:* \n👉 /stats — View overall bot metrics\n👉 /users — View list of database users\n👉 /broadcast <msg> — Broadcast to users\n👉 /shutdown — Power down bot"
+
+    if update.message:
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_categories_keyboard())
+    elif update.callback_query:
+        await update.callback_query.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_categories_keyboard())
+
+async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    invites = get_referral_count(user_id)
+    await query.answer(text="🔄 Processing layout...", show_alert=False)
+
+    data = query.data
+
+    if data.startswith("cat_"):
+        cat = data.replace("cat_", "")
+        if cat == "back":
+            await query.message.edit_text("👇 *Please select your desired file conversion protocol:*", reply_markup=get_categories_keyboard(), parse_mode="Markdown")
+        else:
+            titles = {"doc": "📄 Document Tools", "img": "🖼 Image Tools", "audio": "🎵 Audio Tools", "video": "🎥 Video Tools", "zip": "📦 Archive Utilities"}
+            await query.message.edit_text(f"🛠 *{titles[cat]}*\nSelect the operational tool you wish to deploy:", reply_markup=get_category_tools_keyboard(cat), parse_mode="Markdown")
+
+    elif data == "ui_invite":
+        link = f"https://t.me/Files_changer_bot?start={user_id}"
+        await query.message.reply_text(f"👥 **Your Personal Referral Link:**\n`{link}`\n\nShare this link! You currently have **{invites}** referrals.", parse_mode="Markdown")
+
+    elif data.startswith("mode_"):
+        chosen_mode = data.replace("mode_", "")
+        
+        # Lock Constraints validation Check
+        if chosen_mode == "mp42mp3" and invites < 2:
+            await query.message.reply_text(f"❌ **Access Denied!** Video conversion tools are locked behind our lock policy.\n👉 You need **2 invites** (Current: `{invites}`). Give your link to friends to unlock!", parse_mode="Markdown")
+            return
+        if chosen_mode == "ocr" and invites < 1:
+            await query.message.reply_text(f"❌ **Access Denied!** Image to Text feature is locked.\n👉 You need **1 invite** (Current: `{invites}`). Share your link to unlock!", parse_mode="Markdown")
+            return
+
+        context.user_data["mode"] = chosen_mode
+
+        if chosen_mode in COMMANDS:
+            label = COMMANDS[chosen_mode]["label"]
+            input_fmt = COMMANDS[chosen_mode]["input"]
+            text = f"📥 *Selected:* {label}\n\nPlease attach your **{input_fmt}** file right now. I am listening..."
+        elif chosen_mode == "zip":
+            text = "📥 *Selected:* ZIP Archive Creation Utility\n\nPlease send the file you want to compress into a ZIP file."
+        elif chosen_mode == "unzip":
+            text = "📥 *Selected:* UNZIP Utility\n\nPlease send your **.zip** file now."
+        else:
+            text = f"📥 *Selected:* {chosen_mode.upper()} Utility\n\nPlease send your file now."
+
+        await query.message.reply_text(text=text, parse_mode="Markdown")
+
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mode = context.user_data.get("mode")
+    user_id = update.effective_user.id
+    invites = get_referral_count(user_id)
+    
+    if not mode:
+        await update.message.reply_text("❌ Select a command operation using the menu options first!", reply_markup=get_categories_keyboard())
+        return
+
+    # Secondary enforcement check on file processing entry
+    if mode == "mp42mp3" and invites < 2:
+        await update.message.reply_text("❌ This operational tool requires 2 system referrals.")
+        return
+    if mode == "ocr" and invites < 1:
+        await update.message.reply_text("❌ This operational tool requires 1 system referral.")
+        return
+
+    file_obj = (
+        update.message.document or 
+        update.message.audio or 
+        update.message.voice or 
+        update.message.video or 
+        (update.message.photo[-1] if update.message.photo else None)
+    )
+    if not file_obj: return
+
+    if file_obj.file_size > MAX_FILE_SIZE:
+        await update.message.reply_text("⚠️ File size exceeds boundaries (Max 20MB allowed).")
+        return
+
+    allowed, _ = check_quota(user_id, file_obj.file_size)
+    if not allowed:
+        await update.message.reply_text("🚫 Daily limit constraint reached! (30MB daily limit max).")
+        return
+
+    status_msg = await update.message.reply_text("⏳ `[▓░░░░░░░░░] 10%` *Downloading target file from cloud servers...*", parse_mode="Markdown")
+
+    tg_file = await file_obj.get_file()
+    fname = getattr(file_obj, "file_name", "file.mp4" if update.message.video else "photo.jpg")
+
+    await status_msg.edit_text("⚙️ `[▓▓▓▓▓▓░░░░] 60%` *Running conversion protocols...*", parse_mode="Markdown")
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / fname
+            await tg_file.download_to_drive(custom_path=input_path)
+
+            output_paths = await asyncio.to_thread(convert_file, mode, input_path, Path(tmp))
+
+            await status_msg.edit_text("📤 `[▓▓▓▓▓▓▓▓▓▓] 100%` *Uploading outputs to Telegram...*", parse_mode="Markdown")
+
+            for out in output_paths:
+                with out.open("rb") as f:
+                    await update.message.reply_document(document=f, filename=out.name)
+
+            await status_msg.delete()
+            await update.message.reply_text("✅ *Conversion complete and successfully processed!*", parse_mode="Markdown", reply_markup=get_categories_keyboard())
+    except Exception as e:
+        await status_msg.edit_text(f"❌ *Engine Error raised during conversion operation:* \n`{str(e)}`", parse_mode="Markdown")
+
+# --- CONVERSION HELPERS ---
+def convert_file(mode, input_path, tmp_dir):
+    # CSV to Excel Conversion
+    if mode == "csv2xlsx":
+        out = tmp_dir / f"{input_path.stem}.xlsx"
+        df = pd.read_csv(input_path)
+        df.to_excel(out, index=False, engine='openpyxl')
+        return [out]
+
+    # Image to Text (OCR API Placement Implementation)
+    if mode == "ocr":
+        out = tmp_dir / "extracted_text.txt"
+        try:
+            with open(input_path, 'rb') as f:
+                response = requests.post(
+                    "https://api.ocr.space/parse/image",
+                    files={"image": f},
+                    data={"apikey": "helloworld", "language": "eng"}
+                ).json()
+            parsed_results = response.get("ParsedResults", [])
+            text_result = parsed_results[0].get("ParsedText", "No readable text found via Engine API.") if parsed_results else "OCR API Execution error response."
+        except Exception as api_err:
+            text_result = f"Failed to reach target Text Extraction API: {str(api_err)}"
+        
+        out.write_text(text_result, encoding="utf-8")
+        return [out]
+
+    if mode == "pdf2docx":
+        out = tmp_dir / "converted.docx"
+        cv = Converter(str(input_path))
+        cv.convert(str(out))
+        cv.close()
+        return [out]
+    if mode == "docx2pdf":
+        office = shutil.which("libreoffice") or shutil.which("soffice")
+        if not office:
+            raise Exception("LibreOffice dependencies not found on server engine system path.")
+        subprocess.run([office, "--headless", "--convert-to", "pdf", "--outdir", str(tmp_dir), str(input_path)], check=True)
+        return [tmp_dir / f"{input_path.stem}.pdf"]
+    if mode == "img2pdf":
+        out = tmp_dir / "converted.pdf"
+        out.write_bytes(img2pdf.convert(str(input_path)))
+        return [out]
+
+    if mode == "txt2pdf":
+        out = tmp_dir / "converted.pdf"
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        with open(input_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                pdf.cell(200, 10, txt=line, ln=True, align='L')
+        pdf.output(str(out))
+        return [out]
+
+    if mode == "zip":
+        out = tmp_dir / f"{input_path.stem}.zip"
+        with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(input_path, arcname=input_path.name)
+        return [out]
+
+    if mode == "unzip":
+        if not zipfile.is_zipfile(input_path):
+            raise Exception("The provided file is not a valid zip compression archive.")
+        extract_dir = tmp_dir / "extracted_files"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(input_path, 'r') as zipf:
+            zipf.extractall(extract_dir)
+        return [p for p in extract_dir.rglob('*') if p.is_file()]
+
+    if mode in COMMANDS:
+        output_fmt = COMMANDS[mode]["output"].lower()
+        out = tmp_dir / f"converted.{output_fmt}"
+
+        if mode in ["jpg2png", "png2jpg", "heic2jpg", "gif2png", "pdf2img"]:
+            if mode == "pdf2img":
+                doc = fitz.open(input_path)
+                images = []
+                for i, page in enumerate(doc):
+                    pix = page.get_pixmap()
+                    p_out = tmp_dir / f"page_{i+1}.png"
+                    pix.save(str(p_out))
+                    images.append(p_out)
+                return images
+            else:
+                if input_path.suffix.lower() == '.heic':
+                    from pillow_heif import register_heif_opener
+                    register_heif_opener()
+                img = Image.open(input_path)
+                if output_fmt == "jpg" and img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                img.save(out, format=output_fmt.upper() if output_fmt != "jpg" else "JPEG")
+                return [out]
+
+        if output_fmt in ["wav", "mp3"]:
+            subprocess.run(["ffmpeg", "-y", "-i", str(input_path), "-vn", str(out)], check=True)
+            return [out]
+
+    return []
+
+# --- ADMIN PANEL FUNCTIONS ---
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM users")
+    count = c.fetchone()[0]
+    conn.close()
+    await update.message.reply_text(f"📊 *Admin Metrics:* Total Registered Users = `{count}`", parse_mode="Markdown")
+
+async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT user_id, last_seen FROM users ORDER BY last_seen DESC")
+    rows = c.fetchall()  # Corrected typo adding cursor context reference
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text("📁 No registered user tracking logs discovered inside local database.")
+        return
+
+    msg = "👥 *Database User Directory Logs:*\n\n"
+    for idx, row in enumerate(rows, 1):
+        msg += f"{idx}. ID: `{row[0]}` | Last Seen: `{row[1]}`\n"
+        if len(msg) > 3500:
+            msg += "\n...Truncated due to limits..."
+            break
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
+
+    if not context.args:
+        await update.message.reply_text("❌ Please format message string payload: `/broadcast Your text content here`", parse_mode="Markdown")
+        return
+
+    broadcast_msg = " ".join(context.args)
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users")
+    users = c.fetchall()
+    conn.close()
+
+    success, failure = 0, 0
+    await update.message.reply_text(f"📢 Starting broadcast sequence to {len(users)} users...")
+
+    for user in users:
+        try:
+            await context.bot.send_message(chat_id=user[0], text=broadcast_msg, parse_mode="Markdown")
+            success += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            failure += 1
+
+    await update.message.reply_text(f"✅ *Broadcast completed!*\n• Successful deliveries: `{success}`\n• Failed deliveries: `{failure}`", parse_mode="Markdown")
+
+async def shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
+    await update.message.reply_text("🛑 *Power down execution payload received. Stopping application loops...*", parse_mode="Markdown")
+    os._exit(0)
+
+# --- MAIN RUNNER ---
+def main():
+    init_db()
+    token = os.getenv("BOT_TOKEN")
+    admin = os.getenv("ADMIN_ID")
+    if not token or not admin:
+        print("CRITICAL LOG ERROR: Missing BOT_TOKEN or ADMIN_ID environment variables inside Railway config!")
+        return
+
+    Thread(target=lambda: app.run(host="0.0.0.0", port=8080), daemon=True).start()
+
+    bot_app = Application.builder().token(token).build()
+
+    # Handlers Configuration
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("help", help_cmd))
+    bot_app.add_handler(CommandHandler("stats", stats))
+    bot_app.add_handler(CommandHandler("users", users_cmd))
+    bot_app.add_handler(CommandHandler("broadcast", broadcast))
+    bot_app.add_handler(CommandHandler("shutdown", shutdown))
+
+    bot_app.add_handler(CallbackQueryHandler(inline_button_handler))
+
+    # Process documents, photos, audio, voices, and videos
+    bot_app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.AUDIO | filters.VOICE | filters.VIDEO, handle_file))
+
+    print("Bot service initialization sequence success... Polling telegram API.")
+    bot_app.run_polling()
+
+if __name__ == "__main__":
+    main()
