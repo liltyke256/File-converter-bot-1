@@ -9,6 +9,7 @@ import sys
 import tempfile
 import zipfile
 import sqlite3
+import requests
 from pathlib import Path
 from threading import Thread
 
@@ -18,6 +19,7 @@ import pymupdf as fitz
 
 sys.modules["fitz"] = fitz
 
+import pandas as pd  # Added for CSV conversion
 from fpdf import FPDF
 from pdf2docx import Converter
 from PIL import Image
@@ -35,16 +37,33 @@ def init_db():
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, last_seen TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS usage (user_id INTEGER, day TEXT, bytes_sent INTEGER, PRIMARY KEY (user_id, day))''')
+    # Referral Tracking Table
+    c.execute('''CREATE TABLE IF NOT EXISTS referrals (referrer_id INTEGER, referee_id INTEGER PRIMARY KEY)''')
     conn.commit()
     conn.close()
 
-def track_user_db(user_id):
+def track_user_db(user_id, referrer_id=None):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     today = str(datetime.date.today())
     c.execute("INSERT OR REPLACE INTO users (user_id, last_seen) VALUES (?, ?)", (user_id, today))
+    
+    if referrer_id and int(referrer_id) != user_id:
+        try:
+            c.execute("INSERT INTO referrals (referrer_id, referee_id) VALUES (?, ?)", (int(referrer_id), user_id))
+        except sqlite3.IntegrityError:
+            pass  # Already referred by someone or tracked
+            
     conn.commit()
     conn.close()
+
+def get_referral_count(user_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", (user_id,))
+    count = c.fetchone()[0]
+    conn.close()
+    return count
 
 def check_quota(user_id, file_size_bytes):
     conn = sqlite3.connect(DB_FILE)
@@ -65,27 +84,30 @@ def check_quota(user_id, file_size_bytes):
 
 # --- CONFIG ---
 COMMANDS = {
-    "pdf2docx": {"label": "PDF to Word", "input": "PDF", "output": "DOCX", "extensions": {".pdf"}},
-    "docx2pdf": {"label": "Word to PDF", "input": "DOCX", "output": "PDF", "extensions": {".docx"}},
-    "jpg2png": {"label": "JPG to PNG", "input": "JPG/JPEG", "output": "PNG", "extensions": {".jpg", ".jpeg"}},
-    "png2jpg": {"label": "PNG to JPG", "input": "PNG", "output": "JPG", "extensions": {".png"}},
-    "img2pdf": {"label": "Image to PDF", "input": "JPG/PNG", "output": "PDF", "extensions": {".jpg", ".jpeg", ".png"}},
-    "pdf2img": {"label": "PDF to Image", "input": "PDF", "output": "PNGs", "extensions": {".pdf"}},
-    "txt2pdf": {"label": "Text to PDF", "input": "TXT", "output": "PDF", "extensions": {".txt"}},
+    # Documents
+    "pdf2docx": {"label": "PDF to Word", "input": "PDF", "output": "DOCX", "extensions": {".pdf"}, "cat": "doc"},
+    "docx2pdf": {"label": "Word to PDF", "input": "DOCX", "output": "PDF", "extensions": {".docx"}, "cat": "doc"},
+    "txt2pdf": {"label": "Text to PDF", "input": "TXT", "output": "PDF", "extensions": {".txt"}, "cat": "doc"},
+    "csv2xlsx": {"label": "CSV to Excel", "input": "CSV", "output": "XLSX", "extensions": {".csv"}, "cat": "doc"},
 
-    # New Image Extensions
-    "heic2jpg": {"label": "HEIC to JPG", "input": "HEIC", "output": "JPG", "extensions": {".heic"}},
-    "gif2png": {"label": "GIF to PNG", "input": "GIF", "output": "PNG", "extensions": {".gif"}},
+    # Images
+    "jpg2png": {"label": "JPG to PNG", "input": "JPG/JPEG", "output": "PNG", "extensions": {".jpg", ".jpeg"}, "cat": "img"},
+    "png2jpg": {"label": "PNG to JPG", "input": "PNG", "output": "JPG", "extensions": {".png"}, "cat": "img"},
+    "img2pdf": {"label": "Image to PDF", "input": "JPG/PNG", "output": "PDF", "extensions": {".jpg", ".jpeg", ".png"}, "cat": "img"},
+    "heic2jpg": {"label": "HEIC to JPG", "input": "HEIC", "output": "JPG", "extensions": {".heic"}, "cat": "img"},
+    "gif2png": {"label": "GIF to PNG", "input": "GIF", "output": "PNG", "extensions": {".gif"}, "cat": "img"},
+    "pdf2img": {"label": "PDF to Image", "input": "PDF", "output": "PNGs", "extensions": {".pdf"}, "cat": "img"},
+    "ocr": {"label": "Image to Text (OCR) 🔒(1 Invite)", "input": "Image", "output": "TXT", "extensions": {".jpg", ".jpeg", ".png"}, "cat": "img"},
 
-    # New Audio Extensions
-    "mp32wav": {"label": "MP3 to WAV", "input": "MP3", "output": "WAV", "extensions": {".mp3"}},
-    "wav2mp3": {"label": "WAV to MP3", "input": "WAV", "output": "MP3", "extensions": {".wav"}},
-    "m4a2mp3": {"label": "M4A to MP3", "input": "M4A", "output": "MP3", "extensions": {".m4a"}},
-    "flac2mp3": {"label": "FLAC to MP3", "input": "FLAC", "output": "MP3", "extensions": {".flac"}},
-    "ogg2mp3": {"label": "OGG to MP3", "input": "OGG", "output": "MP3", "extensions": {".ogg"}},
+    # Audio
+    "mp32wav": {"label": "MP3 to WAV", "input": "MP3", "output": "WAV", "extensions": {".mp3"}, "cat": "audio"},
+    "wav2mp3": {"label": "WAV to MP3", "input": "WAV", "output": "MP3", "extensions": {".wav"}, "cat": "audio"},
+    "m4a2mp3": {"label": "M4A to MP3", "input": "M4A", "output": "MP3", "extensions": {".m4a"}, "cat": "audio"},
+    "flac2mp3": {"label": "FLAC to MP3", "input": "FLAC", "output": "MP3", "extensions": {".flac"}, "cat": "audio"},
+    "ogg2mp3": {"label": "OGG to MP3", "input": "OGG", "output": "MP3", "extensions": {".ogg"}, "cat": "audio"},
 
-    # Video Extensions
-    "mp42mp3": {"label": "Video to Audio", "input": "MP4", "output": "MP3", "extensions": {".mp4"}},
+    # Video
+    "mp42mp3": {"label": "Video to Audio 🔒(2 Invites)", "input": "MP4", "output": "MP3", "extensions": {".mp4"}, "cat": "video"},
 }
 MAX_FILE_SIZE = 20 * 1024 * 1024 # 20MB
 
@@ -93,62 +115,144 @@ app = Flask("")
 @app.route("/")
 def home(): return "Bot Online"
 
-# --- UI KEYBOARD CREATOR ---
-def get_main_keyboard():
-    keyboard = []
-    keys = list(COMMANDS.keys())
-    for i in range(0, len(keys), 2):
-        row = [InlineKeyboardButton(COMMANDS[keys[i]]["label"], callback_data=f"mode_{keys[i]}")]
-        if i + 1 < len(keys):
-            row.append(InlineKeyboardButton(COMMANDS[keys[i+1]]["label"], callback_data=f"mode_{keys[i+1]}"))
-        keyboard.append(row)
+# --- UI KEYBOARD CREATORS ---
+def get_categories_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("📄 Documents", callback_data="cat_doc"), InlineKeyboardButton("🖼 Images", callback_data="cat_img")],
+        [InlineKeyboardButton("🎵 Audio", callback_data="cat_audio"), InlineKeyboardButton("🎥 Video tools", callback_data="cat_video")],
+        [InlineKeyboardButton("📦 Archive Utilities", callback_data="cat_zip"), InlineKeyboardButton("🔍 Search Tools", callback_data="cat_search")],
+        [InlineKeyboardButton("👥 My Referral Link", callback_data="ui_invite")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-    keyboard.append([
-        InlineKeyboardButton("📦 Create ZIP", callback_data="mode_zip"),
-        InlineKeyboardButton("🔓 Extract ZIP", callback_data="mode_unzip")
-    ])
+def get_category_tools_keyboard(category):
+    keyboard = []
+    if category in ["doc", "img", "audio", "video"]:
+        keys = [k for k, v in COMMANDS.items() if v["cat"] == category]
+        for i in range(0, len(keys), 2):
+            row = [InlineKeyboardButton(COMMANDS[keys[i]]["label"], callback_data=f"mode_{keys[i]}")]
+            if i + 1 < len(keys):
+                row.append(InlineKeyboardButton(COMMANDS[keys[i+1]]["label"], callback_data=f"mode_{keys[i+1]}"))
+            keyboard.append(row)
+    elif category == "zip":
+        keyboard.append([InlineKeyboardButton("📦 Create ZIP", callback_data="mode_zip"), InlineKeyboardButton("🔓 Extract ZIP", callback_data="mode_unzip")])
+    elif category == "search":
+        keyboard.append([InlineKeyboardButton("🌐 Wikipedia Search", callback_data="ui_wiki")])
+
+    keyboard.append([InlineKeyboardButton("⬅️ Back to Categories", callback_data="cat_back")])
     return InlineKeyboardMarkup(keyboard)
 
 # --- CORE FUNCTIONS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    track_user_db(user.id)
+    
+    # Handle incoming referral parameter from link
+    referrer_id = None
+    if context.args and context.args[0].isdigit():
+        referrer_id = context.args[0]
+        
+    track_user_db(user.id, referrer_id)
+    invites = get_referral_count(user.id)
 
     intro_text = (
         f"🚀 **Welcome to your ultimate File Converter Bot, {user.first_name}!**\n\n"
-        "Transform documents, conversions, and files instantly using the responsive dashboard menu below.\n\n"
+        "Transform documents, conversions, and files instantly using the structured dashboard below.\n\n"
         "⚙️ **System Limits:**\n"
         "• Max file upload: **20MB**\n"
-        "• Daily bandwidth cap: **30MB**\n\n"
-        "👇 *Please select your desired file conversion protocol:* "
+        "• Daily bandwidth cap: **30MB**\n"
+        f"• Your total referrals: **{invites}**\n\n"
+        "👇 *Please select a category to view supported conversions:* "
     )
 
     await update.message.reply_text(
         text=intro_text,
         parse_mode="Markdown",
-        reply_markup=get_main_keyboard()
+        reply_markup=get_categories_keyboard()
     )
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    msg = "📖 *Help Menu*\nSelect an action from the main interface button layout, then upload your file.\n\n" + "\n".join([f"• {v['label']}" for v in COMMANDS.values()])
-    msg += "\n• Create ZIP\n• Extract ZIP"
+    msg = (
+        "📖 *Help Menu*\nSelect a primary category to access specific operations from the visual dashboard, then upload your file.\n\n"
+        "💡 *Features Available Summary:*\n"
+        "• Document Conversions (Word, PDF, TXT, CSV)\n"
+        "• Image Formats & OCR Text Extraction\n"
+        "• Audio processing engine\n"
+        "• Video extraction tools\n"
+        "• Zip / Unzip tools\n"
+        "• /wiki <query> — Instantly search Wikipedia items\n"
+    )
 
     if user_id == int(os.getenv("ADMIN_ID", 0)):
-        msg += "\n\n🛠 *Admin Commands Available:* \n👉 /stats — View overall bot metrics\n👉 /users — View list of database users\n👉 /broadcast <msg> — Broadcast to users\n👉 /shutdown — Power down bot"
+        msg += "\n🛠 *Admin Commands Available:* \n👉 /stats — View overall bot metrics\n👉 /users — View list of database users\n👉 /broadcast <msg> — Broadcast to users\n👉 /shutdown — Power down bot"
 
     if update.message:
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_categories_keyboard())
     elif update.callback_query:
-        await update.callback_query.message.reply_text(msg, parse_mode="Markdown")
+        await update.callback_query.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_categories_keyboard())
+
+async def wiki_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("⚠️ Please provide a query. Usage: `/wiki Artificial Intelligence`", parse_mode="Markdown")
+        return
+    
+    query = " ".join(context.args)
+    status = await update.message.reply_text("🔍 *Searching Wikipedia archive engine...*", parse_mode="Markdown")
+    
+    try:
+        url = "https://en.wikipedia.org/w/api.php"
+        params = {"action": "query", "list": "search", "srsearch": query, "format": "json"}
+        res = requests.get(url, params=params).json()
+        search_results = res.get("query", {}).get("search", [])
+        
+        if not search_results:
+            await status.edit_text("❌ No relevant Wikipedia pages matched your search terms.")
+            return
+            
+        title = search_results[0]["title"]
+        page_id = search_results[0]["pageid"]
+        snippet = search_results[0]["snippet"].replace('<span class="searchmatch">', '**').replace('</span>', '**')
+        page_url = f"https://en.wikipedia.org/?curid={page_id}"
+        
+        response_text = f"🌐 **Wikipedia Result:** [{title}]({page_url})\n\n{snippet}..."
+        await status.edit_text(response_text, parse_mode="Markdown", disable_web_page_preview=False)
+    except Exception as e:
+        await status.edit_text(f"❌ Wiki Engine encountered an operational fault: `{str(e)}`", parse_mode="Markdown")
 
 async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer(text="🔄 Processing action...", show_alert=False)
+    user_id = query.from_user.id
+    invites = get_referral_count(user_id)
+    await query.answer(text="🔄 Processing layout...", show_alert=False)
 
     data = query.data
-    if data.startswith("mode_"):
+
+    if data.startswith("cat_"):
+        cat = data.replace("cat_", "")
+        if cat == "back":
+            await query.message.edit_text("👇 *Please select your desired file conversion protocol:*", reply_markup=get_categories_keyboard(), parse_mode="Markdown")
+        else:
+            titles = {"doc": "📄 Document Tools", "img": "🖼 Image Tools", "audio": "🎵 Audio Tools", "video": "🎥 Video Tools", "zip": "📦 Archive Utilities", "search": "🔍 Extra Search Utilities"}
+            await query.message.edit_text(f"🛠 *{titles[cat]}*\nSelect the operational tool you wish to deploy:", reply_markup=get_category_tools_keyboard(cat), parse_mode="Markdown")
+
+    elif data == "ui_invite":
+        link = f"https://t.me/Files_changer_bot?start={user_id}"
+        await query.message.reply_text(f"👥 **Your Personal Referral Link:**\n`{link}`\n\nShare this link! You currently have **{invites}** referrals.", parse_mode="Markdown")
+
+    elif data == "ui_wiki":
+        await query.message.reply_text("💡 To execute a search query, simply type `/wiki <your search term>` right here in the chat bar.", parse_mode="Markdown")
+
+    elif data.startswith("mode_"):
         chosen_mode = data.replace("mode_", "")
+        
+        # Lock Constraints validation Check
+        if chosen_mode == "mp42mp3" and invites < 2:
+            await query.message.reply_text(f"❌ **Access Denied!** Video conversion tools are locked behind our lock policy.\n👉 You need **2 invites** (Current: `{invites}`). Give your link to friends to unlock!", parse_mode="Markdown")
+            return
+        if chosen_mode == "ocr" and invites < 1:
+            await query.message.reply_text(f"❌ **Access Denied!** Image to Text feature is locked.\n👉 You need **1 invite** (Current: `{invites}`). Share your link to unlock!", parse_mode="Markdown")
+            return
+
         context.user_data["mode"] = chosen_mode
 
         if chosen_mode in COMMANDS:
@@ -166,8 +270,19 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get("mode")
+    user_id = update.effective_user.id
+    invites = get_referral_count(user_id)
+    
     if not mode:
-        await update.message.reply_text("❌ Select a command operation using the menu options first!", reply_markup=get_main_keyboard())
+        await update.message.reply_text("❌ Select a command operation using the menu options first!", reply_markup=get_categories_keyboard())
+        return
+
+    # Secondary enforcement check on file processing entry
+    if mode == "mp42mp3" and invites < 2:
+        await update.message.reply_text("❌ This operational tool requires 2 system referrals.")
+        return
+    if mode == "ocr" and invites < 1:
+        await update.message.reply_text("❌ This operational tool requires 1 system referral.")
         return
 
     file_obj = (
@@ -183,7 +298,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ File size exceeds boundaries (Max 20MB allowed).")
         return
 
-    allowed, _ = check_quota(update.effective_user.id, file_obj.file_size)
+    allowed, _ = check_quota(user_id, file_obj.file_size)
     if not allowed:
         await update.message.reply_text("🚫 Daily limit constraint reached! (30MB daily limit max).")
         return
@@ -209,13 +324,38 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_document(document=f, filename=out.name)
 
             await status_msg.delete()
-            await update.message.reply_text("✅ *Conversion complete and successfully processed!*", parse_mode="Markdown", reply_markup=get_main_keyboard())
+            await update.message.reply_text("✅ *Conversion complete and successfully processed!*", parse_mode="Markdown", reply_markup=get_categories_keyboard())
     except Exception as e:
         await status_msg.edit_text(f"❌ *Engine Error raised during conversion operation:* \n`{str(e)}`", parse_mode="Markdown")
 
 # --- CONVERSION HELPERS ---
 def convert_file(mode, input_path, tmp_dir):
-    # Standard document conversions
+    # CSV to Excel Conversion
+    if mode == "csv2xlsx":
+        out = tmp_dir / f"{input_path.stem}.xlsx"
+        df = pd.read_csv(input_path)
+        df.to_excel(out, index=False, engine='openpyxl')
+        return [out]
+
+    # Image to Text (OCR API Placement Implementation)
+    if mode == "ocr":
+        out = tmp_dir / "extracted_text.txt"
+        # Example using a public OCR Endpoint (can be modified to your API specification)
+        try:
+            with open(input_path, 'rb') as f:
+                response = requests.post(
+                    "https://api.ocr.space/parse/image",
+                    files={"image": f},
+                    data={"apikey": "helloworld", "language": "eng"} # Replace api key if needed
+                ).json()
+            parsed_results = response.get("ParsedResults", [])
+            text_result = parsed_results[0].get("ParsedText", "No readable text found via Engine API.") if parsed_results else "OCR API Execution error response."
+        except Exception as api_err:
+            text_result = f"Failed to reach target Text Extraction API: {str(api_err)}"
+        
+        out.write_text(text_result, encoding="utf-8")
+        return [out]
+
     if mode == "pdf2docx":
         out = tmp_dir / "converted.docx"
         cv = Converter(str(input_path))
@@ -233,7 +373,6 @@ def convert_file(mode, input_path, tmp_dir):
         out.write_bytes(img2pdf.convert(str(input_path)))
         return [out]
 
-    # Inside the convert_file(mode, input_path, tmp_dir)
     if mode == "txt2pdf":
         out = tmp_dir / "converted.pdf"
         pdf = FPDF()
@@ -245,7 +384,6 @@ def convert_file(mode, input_path, tmp_dir):
         pdf.output(str(out))
         return [out]
 
-    # ZIP / UNZIP Logic Implementation
     if mode == "zip":
         out = tmp_dir / f"{input_path.stem}.zip"
         with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -261,13 +399,10 @@ def convert_file(mode, input_path, tmp_dir):
             zipf.extractall(extract_dir)
         return [p for p in extract_dir.rglob('*') if p.is_file()]
 
-    # Universal Image & Audio conversion handling using Pillow and FFMPEG
     if mode in COMMANDS:
-        target_ext = list(COMMANDS[mode]["extensions"])[0] if "extensions" in COMMANDS[mode] else None
         output_fmt = COMMANDS[mode]["output"].lower()
         out = tmp_dir / f"converted.{output_fmt}"
 
-        # Image Engine conversions
         if mode in ["jpg2png", "png2jpg", "heic2jpg", "gif2png", "pdf2img"]:
             if mode == "pdf2img":
                 doc = fitz.open(input_path)
@@ -288,7 +423,6 @@ def convert_file(mode, input_path, tmp_dir):
                 img.save(out, format=output_fmt.upper() if output_fmt != "jpg" else "JPEG")
                 return [out]
 
-        # Audio Engine & Video extraction conversions (requires ffmpeg executable binary dependencies)
         if output_fmt in ["wav", "mp3"]:
             subprocess.run(["ffmpeg", "-y", "-i", str(input_path), "-vn", str(out)], check=True)
             return [out]
@@ -328,7 +462,6 @@ async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Broadcast system messages to all registered users inside DB"""
     if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
 
     if not context.args:
@@ -356,9 +489,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ *Broadcast completed!*\n• Successful deliveries: `{success}`\n• Failed deliveries: `{failure}`", parse_mode="Markdown")
 
 async def shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Safely terminate polling sequences remotely"""
     if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
-
     await update.message.reply_text("🛑 *Power down execution payload received. Stopping application loops...*", parse_mode="Markdown")
     os._exit(0)
 
@@ -378,6 +509,7 @@ def main():
     # Handlers Configuration
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("help", help_cmd))
+    bot_app.add_handler(CommandHandler("wiki", wiki_search))
     bot_app.add_handler(CommandHandler("stats", stats))
     bot_app.add_handler(CommandHandler("users", users_cmd))
     bot_app.add_handler(CommandHandler("broadcast", broadcast))
