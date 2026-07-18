@@ -10,6 +10,7 @@ import tempfile
 import zipfile
 import sqlite3
 import requests
+import convertapi  # Integrated ConvertAPI for low-RAM cloud conversions
 from pathlib import Path
 from threading import Thread
 
@@ -338,11 +339,22 @@ def convert_file(mode, input_path, tmp_dir):
         cv.close()
         return [out]
     if mode == "docx2pdf":
-        office = shutil.which("libreoffice") or shutil.which("soffice")
-        if not office:
-            raise Exception("LibreOffice dependencies not found on server engine system path.")
-        subprocess.run([office, "--headless", "--convert-to", "pdf", "--outdir", str(tmp_dir), str(input_path)], check=True)
-        return [tmp_dir / f"{input_path.stem}.pdf"]
+        # Integrated low-RAM ConvertAPI to prevent out-of-memory container crashes
+        out = tmp_dir / f"{input_path.stem}.pdf"
+        convertapi.api_secret = os.getenv("CONVERTAPI_SECRET")
+        if not convertapi.api_secret:
+            raise Exception("Missing CONVERTAPI_SECRET environment variable config!")
+        result = convertapi.convert('pdf', { 'File': str(input_path) }, from_format = 'docx')
+        result.file.save(str(out))
+        return [out]
+        
+        # --- Disabled Heavy LibreOffice Operations ---
+        # office = shutil.which("libreoffice") or shutil.which("soffice")
+        # if not office:
+        #     raise Exception("LibreOffice dependencies not found on server engine system path.")
+        # subprocess.run([office, "--headless", "--convert-to", "pdf", "--outdir", str(tmp_dir), str(input_path)], check=True)
+        # return [tmp_dir / f"{input_path.stem}.pdf"]
+
     if mode == "img2pdf":
         out = tmp_dir / "converted.pdf"
         out.write_bytes(img2pdf.convert(str(input_path)))
