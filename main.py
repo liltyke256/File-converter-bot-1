@@ -88,9 +88,6 @@ COMMANDS = {
     "m4a2mp3": {"label": "M4A to MP3", "input": "M4A", "output": "MP3", "extensions": {".m4a"}, "cat": "audio"},
     "flac2mp3": {"label": "FLAC to MP3", "input": "FLAC", "output": "MP3", "extensions": {".flac"}, "cat": "audio"},
     "ogg2mp3": {"label": "OGG to MP3", "input": "OGG", "output": "MP3", "extensions": {".ogg"}, "cat": "audio"},
-
-    # Video
-    "mp42mp3": {"label": "Video to Audio", "input": "MP4", "output": "MP3", "extensions": {".mp4"}, "cat": "video"},
 }
 MAX_FILE_SIZE = 20 * 1024 * 1024 # 20MB
 
@@ -102,14 +99,13 @@ def home(): return "Bot Online"
 def get_categories_keyboard():
     keyboard = [
         [InlineKeyboardButton("📄 Documents", callback_data="cat_doc"), InlineKeyboardButton("🖼 Images", callback_data="cat_img")],
-        [InlineKeyboardButton("🎵 Audio", callback_data="cat_audio"), InlineKeyboardButton("🎥 Video tools", callback_data="cat_video")],
-        [InlineKeyboardButton("📦 Archive Utilities", callback_data="cat_zip")]
+        [InlineKeyboardButton("🎵 Audio", callback_data="cat_audio"), InlineKeyboardButton("📦 Archive Utilities", callback_data="cat_zip")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_category_tools_keyboard(category):
     keyboard = []
-    if category in ["doc", "img", "audio", "video"]:
+    if category in ["doc", "img", "audio"]:
         keys = [k for k, v in COMMANDS.items() if v["cat"] == category]
         for i in range(0, len(keys), 2):
             row = [InlineKeyboardButton(COMMANDS[keys[i]]["label"], callback_data=f"mode_{keys[i]}")]
@@ -151,7 +147,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Document Conversions (Word, PDF, TXT, CSV)\n"
         "• Image Formats & OCR Text Extraction\n"
         "• Audio processing engine\n"
-        "• Video extraction tools\n"
         "• Zip / Unzip tools\n"
     )
 
@@ -174,7 +169,7 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
         if cat == "back":
             await query.message.edit_text("👇 *Please select your desired file conversion protocol:*", reply_markup=get_categories_keyboard(), parse_mode="Markdown")
         else:
-            titles = {"doc": "📄 Document Tools", "img": "🖼 Image Tools", "audio": "🎵 Audio Tools", "video": "🎥 Video Tools", "zip": "📦 Archive Utilities"}
+            titles = {"doc": "📄 Document Tools", "img": "🖼 Image Tools", "audio": "🎵 Audio Tools", "zip": "📦 Archive Utilities"}
             await query.message.edit_text(f"🛠 *{titles[cat]}*\nSelect the operational tool you wish to deploy:", reply_markup=get_category_tools_keyboard(cat), parse_mode="Markdown")
 
     elif data.startswith("mode_"):
@@ -207,7 +202,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update.message.document or 
         update.message.audio or 
         update.message.voice or 
-        update.message.video or 
         (update.message.photo[-1] if update.message.photo else None)
     )
     if not file_obj: return
@@ -224,7 +218,13 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("⏳ `[▓░░░░░░░░░] 10%` *Downloading target file from cloud servers...*", parse_mode="Markdown")
 
     tg_file = await file_obj.get_file()
-    fname = getattr(file_obj, "file_name", "file.mp4" if update.message.video else "photo.jpg")
+    
+    fname = getattr(file_obj, "file_name", None)
+    if not fname:
+        if update.message.audio or update.message.voice:
+            fname = "audio.mp3"
+        else:
+            fname = "photo.jpg"
 
     await status_msg.edit_text("⚙️ `[▓▓▓▓▓▓░░░░] 60%` *Running conversion protocols...*", parse_mode="Markdown")
 
@@ -433,8 +433,8 @@ def main():
 
     bot_app.add_handler(CallbackQueryHandler(inline_button_handler))
 
-    # Process documents, photos, audio, voices, and videos
-    bot_app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.AUDIO | filters.VOICE | filters.VIDEO, handle_file))
+    # Process documents, photos, audio, and voices (Video removed to protect RAM limits)
+    bot_app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.AUDIO | filters.VOICE, handle_file))
 
     print("Bot service initialization sequence success... Polling telegram API.")
     bot_app.run_polling()
