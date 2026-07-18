@@ -8,4 +8,4 @@ fpdf
 requests
 pandas
 openpyxl
-edge-tts==6.1.10
+edge-tts
