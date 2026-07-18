@@ -9,3 +9,5 @@ requests
 pandas
 openpyxl
 edge-tts
+pyTelegramBotAPI
+convertapi
