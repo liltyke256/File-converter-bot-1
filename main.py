@@ -37,33 +37,16 @@ def init_db():
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, last_seen TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS usage (user_id INTEGER, day TEXT, bytes_sent INTEGER, PRIMARY KEY (user_id, day))''')
-    # Referral Tracking Table
-    c.execute('''CREATE TABLE IF NOT EXISTS referrals (referrer_id INTEGER, referee_id INTEGER PRIMARY KEY)''')
     conn.commit()
     conn.close()
 
-def track_user_db(user_id, referrer_id=None):
+def track_user_db(user_id):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     today = str(datetime.date.today())
     c.execute("INSERT OR REPLACE INTO users (user_id, last_seen) VALUES (?, ?)", (user_id, today))
-    
-    if referrer_id and int(referrer_id) != user_id:
-        try:
-            c.execute("INSERT INTO referrals (referrer_id, referee_id) VALUES (?, ?)", (int(referrer_id), user_id))
-        except sqlite3.IntegrityError:
-            pass  # Already referred by someone or tracked
-            
     conn.commit()
     conn.close()
-
-def get_referral_count(user_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", (user_id,))
-    count = c.fetchone()[0]
-    conn.close()
-    return count
 
 def check_quota(user_id, file_size_bytes):
     conn = sqlite3.connect(DB_FILE)
@@ -97,7 +80,7 @@ COMMANDS = {
     "heic2jpg": {"label": "HEIC to JPG", "input": "HEIC", "output": "JPG", "extensions": {".heic"}, "cat": "img"},
     "gif2png": {"label": "GIF to PNG", "input": "GIF", "output": "PNG", "extensions": {".gif"}, "cat": "img"},
     "pdf2img": {"label": "PDF to Image", "input": "PDF", "output": "PNGs", "extensions": {".pdf"}, "cat": "img"},
-    "ocr": {"label": "Image to Text (OCR) 🔒(1 Invite)", "input": "Image", "output": "TXT", "extensions": {".jpg", ".jpeg", ".png"}, "cat": "img"},
+    "ocr": {"label": "Image to Text (OCR)", "input": "Image", "output": "TXT", "extensions": {".jpg", ".jpeg", ".png"}, "cat": "img"},
 
     # Audio
     "mp32wav": {"label": "MP3 to WAV", "input": "MP3", "output": "WAV", "extensions": {".mp3"}, "cat": "audio"},
@@ -107,7 +90,7 @@ COMMANDS = {
     "ogg2mp3": {"label": "OGG to MP3", "input": "OGG", "output": "MP3", "extensions": {".ogg"}, "cat": "audio"},
 
     # Video
-    "mp42mp3": {"label": "Video to Audio 🔒(2 Invites)", "input": "MP4", "output": "MP3", "extensions": {".mp4"}, "cat": "video"},
+    "mp42mp3": {"label": "Video to Audio", "input": "MP4", "output": "MP3", "extensions": {".mp4"}, "cat": "video"},
 }
 MAX_FILE_SIZE = 20 * 1024 * 1024 # 20MB
 
@@ -120,8 +103,7 @@ def get_categories_keyboard():
     keyboard = [
         [InlineKeyboardButton("📄 Documents", callback_data="cat_doc"), InlineKeyboardButton("🖼 Images", callback_data="cat_img")],
         [InlineKeyboardButton("🎵 Audio", callback_data="cat_audio"), InlineKeyboardButton("🎥 Video tools", callback_data="cat_video")],
-        [InlineKeyboardButton("📦 Archive Utilities", callback_data="cat_zip")],
-        [InlineKeyboardButton("👥 My Referral Link", callback_data="ui_invite")]
+        [InlineKeyboardButton("📦 Archive Utilities", callback_data="cat_zip")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -143,22 +125,15 @@ def get_category_tools_keyboard(category):
 # --- CORE FUNCTIONS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    
-    # Handle incoming referral parameter from link
-    referrer_id = None
-    if context.args and context.args[0].isdigit():
-        referrer_id = context.args[0]
-        
-    track_user_db(user.id, referrer_id)
-    invites = get_referral_count(user.id)
+
+    track_user_db(user.id)
 
     intro_text = (
         f"🚀 **Welcome to your ultimate File Converter Bot, {user.first_name}!**\n\n"
         "Transform documents, conversions, and files instantly using the structured dashboard below.\n\n"
         "⚙️ **System Limits:**\n"
         "• Max file upload: **20MB**\n"
-        "• Daily bandwidth cap: **30MB**\n"
-        f"• Your total referrals: **{invites}**\n\n"
+        "• Daily bandwidth cap: **30MB**\n\n"
         "👇 *Please select a category to view supported conversions:* "
     )
 
@@ -190,8 +165,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user_id = query.from_user.id
-    invites = get_referral_count(user_id)
     await query.answer(text="🔄 Processing layout...", show_alert=False)
 
     data = query.data
@@ -204,20 +177,8 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
             titles = {"doc": "📄 Document Tools", "img": "🖼 Image Tools", "audio": "🎵 Audio Tools", "video": "🎥 Video Tools", "zip": "📦 Archive Utilities"}
             await query.message.edit_text(f"🛠 *{titles[cat]}*\nSelect the operational tool you wish to deploy:", reply_markup=get_category_tools_keyboard(cat), parse_mode="Markdown")
 
-    elif data == "ui_invite":
-        link = f"https://t.me/Files_changer_bot?start={user_id}"
-        await query.message.reply_text(f"👥 **Your Personal Referral Link:**\n`{link}`\n\nShare this link! You currently have **{invites}** referrals.", parse_mode="Markdown")
-
     elif data.startswith("mode_"):
         chosen_mode = data.replace("mode_", "")
-        
-        # Lock Constraints validation Check
-        if chosen_mode == "mp42mp3" and invites < 2:
-            await query.message.reply_text(f"❌ **Access Denied!** Video conversion tools are locked behind our lock policy.\n👉 You need **2 invites** (Current: `{invites}`). Give your link to friends to unlock!", parse_mode="Markdown")
-            return
-        if chosen_mode == "ocr" and invites < 1:
-            await query.message.reply_text(f"❌ **Access Denied!** Image to Text feature is locked.\n👉 You need **1 invite** (Current: `{invites}`). Share your link to unlock!", parse_mode="Markdown")
-            return
 
         context.user_data["mode"] = chosen_mode
 
@@ -237,18 +198,9 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get("mode")
     user_id = update.effective_user.id
-    invites = get_referral_count(user_id)
-    
+
     if not mode:
         await update.message.reply_text("❌ Select a command operation using the menu options first!", reply_markup=get_categories_keyboard())
-        return
-
-    # Secondary enforcement check on file processing entry
-    if mode == "mp42mp3" and invites < 2:
-        await update.message.reply_text("❌ This operational tool requires 2 system referrals.")
-        return
-    if mode == "ocr" and invites < 1:
-        await update.message.reply_text("❌ This operational tool requires 1 system referral.")
         return
 
     file_obj = (
@@ -317,7 +269,7 @@ def convert_file(mode, input_path, tmp_dir):
             text_result = parsed_results[0].get("ParsedText", "No readable text found via Engine API.") if parsed_results else "OCR API Execution error response."
         except Exception as api_err:
             text_result = f"Failed to reach target Text Extraction API: {str(api_err)}"
-        
+
         out.write_text(text_result, encoding="utf-8")
         return [out]
 
@@ -410,7 +362,7 @@ async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT user_id, last_seen FROM users ORDER BY last_seen DESC")
-    rows = c.fetchall()  # Corrected typo adding cursor context reference
+    rows = c.fetchall()
     conn.close()
 
     if not rows:
