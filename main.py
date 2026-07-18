@@ -119,6 +119,12 @@ def get_category_tools_keyboard(category):
     keyboard.append([InlineKeyboardButton("⬅️ Back to Categories", callback_data="cat_back")])
     return InlineKeyboardMarkup(keyboard)
 
+def get_tts_speed_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("🐢 Slow Speed", callback_data="ttsspeed_-15%"), InlineKeyboardButton("🏃 Normal Speed", callback_data="ttsspeed_+0%")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 # --- CORE FUNCTIONS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -178,13 +184,18 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
         context.user_data["mode"] = chosen_mode
 
+        if chosen_mode == "text2speech":
+            await query.message.edit_text(
+                text="📣 *Text to Speech Configuration*\n\nPlease select the desired speed for your generated audio:",
+                parse_mode="Markdown",
+                reply_markup=get_tts_speed_keyboard()
+            )
+            return
+
         if chosen_mode in COMMANDS:
             label = COMMANDS[chosen_mode]["label"]
             input_fmt = COMMANDS[chosen_mode]["input"]
-            if chosen_mode == "text2speech":
-                text = f"📥 *Selected:* {label}\n\nPlease type or paste your raw **{input_fmt}** message directly into the chat. I will compile it into audio..."
-            else:
-                text = f"📥 *Selected:* {label}\n\nPlease attach your **{input_fmt}** file right now. I am listening..."
+            text = f"📥 *Selected:* {label}\n\nPlease attach your **{input_fmt}** file right now. I am listening..."
         elif chosen_mode == "zip":
             text = "📥 *Selected:* ZIP Archive Creation Utility\n\nPlease send the file you want to compress into a ZIP file."
         elif chosen_mode == "unzip":
@@ -192,6 +203,17 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             text = f"📥 *Selected:* {chosen_mode.upper()} Utility\n\nPlease send your file now."
 
+        await query.message.reply_text(text=text, parse_mode="Markdown")
+
+    elif data.startswith("ttsspeed_"):
+        speed_val = data.replace("ttsspeed_", "")
+        context.user_data["tts_speed"] = speed_val
+        
+        speed_label = "Slow" if speed_val == "-15%" else "Normal"
+        label = COMMANDS["text2speech"]["label"]
+        input_fmt = COMMANDS["text2speech"]["input"]
+        
+        text = f"📥 *Selected:* {label} ({speed_label} Speed)\n\nPlease type or paste your raw **{input_fmt}** message directly into the chat. I will compile it into audio..."
         await query.message.reply_text(text=text, parse_mode="Markdown")
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -251,7 +273,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await tg_file.download_to_drive(custom_path=input_path)
 
             # Pass runtime update parameters if needed down line
-            output_paths = await convert_file_async(mode, input_path, Path(tmp))
+            output_paths = await convert_file_async(mode, input_path, Path(tmp), context.user_data.get("tts_speed", "+0%"))
 
             await status_msg.edit_text("📤 `[▓▓▓▓▓▓▓▓▓▓] 100%` *Uploading outputs to Telegram...*", parse_mode="Markdown")
 
@@ -268,7 +290,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ *Engine Error raised during conversion operation:* \n`{str(e)}`", parse_mode="Markdown")
 
 # Async router wrapper to support native non-blocking edge-tts streaming routines safely
-async def convert_file_async(mode, input_path, tmp_dir):
+async def convert_file_async(mode, input_path, tmp_dir, tts_speed="+0%"):
     if mode == "text2speech":
         # Dynamic import layer ensures runtime safety if dependencies change
         import edge_tts
@@ -276,7 +298,7 @@ async def convert_file_async(mode, input_path, tmp_dir):
         text_content = input_path.read_text(encoding="utf-8")
         
         # Deploy clean English voice engine profile config matching 512MB structural resource limit
-        communicate = edge_tts.Communicate(text_content, "en-US-GuyNeural")
+        communicate = edge_tts.Communicate(text_content, "en-US-GuyNeural", rate=tts_speed)
         await communicate.save(str(out))
         return [out]
         
