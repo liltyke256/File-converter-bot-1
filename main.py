@@ -83,6 +83,7 @@ COMMANDS = {
     "ocr": {"label": "Image to Text (OCR)", "input": "Image", "output": "TXT", "extensions": {".jpg", ".jpeg", ".png"}, "cat": "img"},
 
     # Audio
+    "text2speech": {"label": "Text to Speech", "input": "TEXT", "output": "MP3", "extensions": set(), "cat": "audio"},
     "mp32wav": {"label": "MP3 to WAV", "input": "MP3", "output": "WAV", "extensions": {".mp3"}, "cat": "audio"},
     "wav2mp3": {"label": "WAV to MP3", "input": "WAV", "output": "MP3", "extensions": {".wav"}, "cat": "audio"},
     "m4a2mp3": {"label": "M4A to MP3", "input": "M4A", "output": "MP3", "extensions": {".m4a"}, "cat": "audio"},
@@ -146,7 +147,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💡 *Features Available Summary:*\n"
         "• Document Conversions (Word, PDF, TXT, CSV)\n"
         "• Image Formats & OCR Text Extraction\n"
-        "• Audio processing engine\n"
+        "• Audio processing engine & Text to Speech\n"
         "• Zip / Unzip tools\n"
     )
 
@@ -180,7 +181,10 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
         if chosen_mode in COMMANDS:
             label = COMMANDS[chosen_mode]["label"]
             input_fmt = COMMANDS[chosen_mode]["input"]
-            text = f"📥 *Selected:* {label}\n\nPlease attach your **{input_fmt}** file right now. I am listening..."
+            if chosen_mode == "text2speech":
+                text = f"📥 *Selected:* {label}\n\nPlease type or paste your raw **{input_fmt}** message directly into the chat. I will compile it into audio..."
+            else:
+                text = f"📥 *Selected:* {label}\n\nPlease attach your **{input_fmt}** file right now. I am listening..."
         elif chosen_mode == "zip":
             text = "📥 *Selected:* ZIP Archive Creation Utility\n\nPlease send the file you want to compress into a ZIP file."
         elif chosen_mode == "unzip":
@@ -198,53 +202,85 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Select a command operation using the menu options first!", reply_markup=get_categories_keyboard())
         return
 
-    file_obj = (
-        update.message.document or 
-        update.message.audio or 
-        update.message.voice or 
-        (update.message.photo[-1] if update.message.photo else None)
-    )
-    if not file_obj: return
-
-    if file_obj.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text("⚠️ File size exceeds boundaries (Max 20MB allowed).")
-        return
-
-    allowed, _ = check_quota(user_id, file_obj.file_size)
-    if not allowed:
-        await update.message.reply_text("🚫 Daily limit constraint reached! (30MB daily limit max).")
-        return
-
-    status_msg = await update.message.reply_text("⏳ `[▓░░░░░░░░░] 10%` *Downloading target file from cloud servers...*", parse_mode="Markdown")
-
-    tg_file = await file_obj.get_file()
+    # Handle standard files or extract dynamic raw text properties for Text-to-Speech
+    is_text_tts = (mode == "text2speech" and update.message.text and not update.message.text.startswith("/"))
     
-    fname = getattr(file_obj, "file_name", None)
-    if not fname:
-        if update.message.audio or update.message.voice:
-            fname = "audio.mp3"
-        else:
-            fname = "photo.jpg"
+    file_obj = None
+    if not is_text_tts:
+        file_obj = (
+            update.message.document or 
+            update.message.audio or 
+            update.message.voice or 
+            (update.message.photo[-1] if update.message.photo else None)
+        )
+        if not file_obj: return
+
+        if file_obj.file_size > MAX_FILE_SIZE:
+            await update.message.reply_text("⚠️ File size exceeds boundaries (Max 20MB allowed).")
+            return
+
+        allowed, _ = check_quota(user_id, file_obj.file_size)
+        if not allowed:
+            await update.message.reply_text("🚫 Daily limit constraint reached! (30MB daily limit max).")
+            return
+
+    status_msg = await update.message.reply_text("⏳ `[▓░░░░░░░░░] 10%` *Downloading target data from cloud servers...*", parse_mode="Markdown")
+
+    fname = None
+    if is_text_tts:
+        fname = "input_text.txt"
+    else:
+        tg_file = await file_obj.get_file()
+        fname = getattr(file_obj, "file_name", None)
+        if not fname:
+            if update.message.audio or update.message.voice:
+                fname = "audio.mp3"
+            else:
+                fname = "photo.jpg"
 
     await status_msg.edit_text("⚙️ `[▓▓▓▓▓▓░░░░] 60%` *Running conversion protocols...*", parse_mode="Markdown")
 
     try:
         with tempfile.TemporaryDirectory() as tmp:
             input_path = Path(tmp) / fname
-            await tg_file.download_to_drive(custom_path=input_path)
+            
+            if is_text_tts:
+                # Save input message to temp directory space for conversion handling safely
+                input_path.write_text(update.message.text, encoding="utf-8")
+            else:
+                await tg_file.download_to_drive(custom_path=input_path)
 
-            output_paths = await asyncio.to_thread(convert_file, mode, input_path, Path(tmp))
+            # Pass runtime update parameters if needed down line
+            output_paths = await convert_file_async(mode, input_path, Path(tmp))
 
             await status_msg.edit_text("📤 `[▓▓▓▓▓▓▓▓▓▓] 100%` *Uploading outputs to Telegram...*", parse_mode="Markdown")
 
             for out in output_paths:
                 with out.open("rb") as f:
-                    await update.message.reply_document(document=f, filename=out.name)
+                    if mode == "text2speech":
+                        await update.message.reply_audio(audio=f, filename=out.name, title="Synthesized Audio")
+                    else:
+                        await update.message.reply_document(document=f, filename=out.name)
 
             await status_msg.delete()
             await update.message.reply_text("✅ *Conversion complete and successfully processed!*", parse_mode="Markdown", reply_markup=get_categories_keyboard())
     except Exception as e:
         await status_msg.edit_text(f"❌ *Engine Error raised during conversion operation:* \n`{str(e)}`", parse_mode="Markdown")
+
+# Async router wrapper to support native non-blocking edge-tts streaming routines safely
+async def convert_file_async(mode, input_path, tmp_dir):
+    if mode == "text2speech":
+        # Dynamic import layer ensures runtime safety if dependencies change
+        import edge_tts
+        out = tmp_dir / "synthesized_speech.mp3"
+        text_content = input_path.read_text(encoding="utf-8")
+        
+        # Deploy clean English voice engine profile config matching 512MB structural resource limit
+        communicate = edge_tts.Communicate(text_content, "en-US-GuyNeural")
+        await communicate.save(str(out))
+        return [out]
+        
+    return await asyncio.to_thread(convert_file, mode, input_path, tmp_dir)
 
 # --- CONVERSION HELPERS ---
 def convert_file(mode, input_path, tmp_dir):
@@ -433,8 +469,8 @@ def main():
 
     bot_app.add_handler(CallbackQueryHandler(inline_button_handler))
 
-    # Process documents, photos, audio, and voices (Video removed to protect RAM limits)
-    bot_app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.AUDIO | filters.VOICE, handle_file))
+    # Process text input messages (for TTS compatibility structural execution), documents, photos, audio, and voices
+    bot_app.add_handler(MessageHandler(filters.TEXT | filters.Document.ALL | filters.PHOTO | filters.AUDIO | filters.VOICE, handle_file))
 
     print("Bot service initialization sequence success... Polling telegram API.")
     bot_app.run_polling()
