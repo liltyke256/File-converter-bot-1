@@ -11,3 +11,4 @@ openpyxl
 edge-tts
 pyTelegramBotAPI
 convertapi
+libsql
