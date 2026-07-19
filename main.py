@@ -101,7 +101,8 @@ def home(): return "Bot Online"
 def get_categories_keyboard():
     keyboard = [
         [InlineKeyboardButton("📄 Documents", callback_data="cat_doc"), InlineKeyboardButton("🖼 Images", callback_data="cat_img")],
-        [InlineKeyboardButton("🎵 Audio", callback_data="cat_audio"), InlineKeyboardButton("📦 Archive Utilities", callback_data="cat_zip")]
+        [InlineKeyboardButton("🎵 Audio", callback_data="cat_audio"), InlineKeyboardButton("📦 Archive Utilities", callback_data="cat_zip")],
+        [InlineKeyboardButton("✍️ Feedback", callback_data="mode_feedback")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -170,6 +171,9 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer(text="🔄 Processing layout...", show_alert=False)
 
+    user_id = query.from_user.id
+    track_user_db(user_id)  # Updates recent activity database anytime a user interacts with dashboard layouts
+
     data = query.data
 
     if data.startswith("cat_"):
@@ -190,6 +194,13 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 text="📣 *Text to Speech Configuration*\n\nPlease select the desired speed for your generated audio:",
                 parse_mode="Markdown",
                 reply_markup=get_tts_speed_keyboard()
+            )
+            return
+
+        if chosen_mode == "feedback":
+            await query.message.reply_text(
+                text="✍️ *Submit System Feedback*\n\nPlease type your suggestions, feature requests, or issues directly into the chat now. I will immediately forward it securely to the bot admin team.",
+                parse_mode="Markdown"
             )
             return
 
@@ -220,9 +231,30 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get("mode")
     user_id = update.effective_user.id
+    
+    track_user_db(user_id)  # Always counts whoever converts a file or messages as a recent active user immediately
 
     if not mode:
         await update.message.reply_text("❌ Select a command operation using the menu options first!", reply_markup=get_categories_keyboard())
+        return
+
+    # Handle Feedback routing to admin safely
+    if mode == "feedback":
+        feedback_text = update.message.text
+        if not feedback_text or feedback_text.startswith("/"):
+            await update.message.reply_text("⚠️ Action canceled. Please provide a valid textual feedback message thread.")
+            context.user_data["mode"] = None
+            return
+        
+        admin_id = int(os.getenv("ADMIN_ID", 0))
+        if admin_id != 0:
+            user_info = f"👤 *New Feedback Received!*\n• From User: {update.effective_user.first_name}\n• User ID: `{user_id}`\n• Username: @{update.effective_user.username or 'None'}\n\n💬 *Message Body:*\n{feedback_text}"
+            await context.bot.send_message(chat_id=admin_id, text=user_info, parse_mode="Markdown")
+            await update.message.reply_text("✅ *Thank you! Your feedback message has been securely sent directly to the administrator.*", parse_mode="Markdown", reply_markup=get_categories_keyboard())
+        else:
+            await update.message.reply_text("❌ Configuration Error: Admin routing endpoint not connected on this server container instance.")
+        
+        context.user_data["mode"] = None
         return
 
     # Handle standard files or extract dynamic raw text properties for Text-to-Speech
