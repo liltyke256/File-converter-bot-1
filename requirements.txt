@@ -12,4 +12,3 @@ fpdf2
 pandas
 openpyxl
 edge-tts
-hrana-client
