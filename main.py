@@ -9,7 +9,7 @@ import sys
 import tempfile
 import zipfile
 import requests
-import convertapi  # Integrated ConvertAPI for low-RAM cloud conversions
+import psutil  # For host RAM safety checks
 from pathlib import Path
 from threading import Thread
 
@@ -26,6 +26,7 @@ import pandas as pd  # Added for CSV conversion
 from fpdf import FPDF
 from pdf2docx import Converter
 from PIL import Image
+from pypdf import PdfReader  # Lightweight local PDF text extractor
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
 
@@ -70,7 +71,7 @@ def check_quota(user_id, file_size_bytes):
         c.execute("SELECT bytes_sent FROM usage WHERE user_id = ? AND day = ?", (user_id, today))
         row = c.fetchone()
         current_usage = row[0] if row else 0
-        MAX_DAILY = 30 * 1024 * 1024 # 30MB
+        MAX_DAILY = 100 * 1024 * 1024 # Increased daily limit buffer to accommodate larger 50MB files
         if current_usage + file_size_bytes > MAX_DAILY:
             conn.close()
             return False, current_usage
@@ -82,6 +83,96 @@ def check_quota(user_id, file_size_bytes):
     except Exception as e:
         logging.error(f"Quota validation error: {e}")
         return True, 0  # Fail-safe to let users convert if DB experiences minor latency spikes
+
+# --- CLOUDCONVERT HYBRID API & RAM SAFETY ENGINE ---
+CLOUDCONVERT_KEY = os.getenv("CLOUDCONVERT_API_KEY")
+CLOUDCONVERT_BASE_URL = "https://api.cloudconvert.com/v2"
+LOCAL_MAX_SIZE_MB = 5.0
+SAFE_RAM_THRESHOLD_PERCENT = 70.0
+
+def get_cloudconvert_credits() -> int:
+    """Queries CloudConvert account to inspect remaining daily credits."""
+    if not CLOUDCONVERT_KEY:
+        logging.warning("CLOUDCONVERT_API_KEY is missing from environment variables.")
+        return 0
+    headers = {"Authorization": f"Bearer {CLOUDCONVERT_KEY}"}
+    try:
+        response = requests.get(f"{CLOUDCONVERT_BASE_URL}/users/me", headers=headers, timeout=5)
+        response.raise_for_status()
+        credits = response.json()["data"].get("credits", 0)
+        logging.info(f"CloudConvert daily credits available: {credits}")
+        return credits
+    except Exception as e:
+        logging.error(f"Failed to fetch CloudConvert balance: {e}")
+        return 0
+
+def convert_via_cloudconvert(input_path: Path, output_format: str, tmp_dir: Path) -> Path:
+    """Offloads heavy file conversion tasks to CloudConvert REST API."""
+    if not CLOUDCONVERT_KEY:
+        raise Exception("Missing CLOUDCONVERT_API_KEY environment variable!")
+    
+    credits_left = get_cloudconvert_credits()
+    if credits_left < 1:
+        raise Exception("Daily CloudConvert API conversion quota exhausted (25/25 used today). Try again tomorrow!")
+
+    headers = {"Authorization": f"Bearer {CLOUDCONVERT_KEY}"}
+    out_file = tmp_dir / f"converted.{output_format.lower()}"
+
+    # Step 1: Create Job
+    job_payload = {
+        "tasks": {
+            "upload-file": {"operation": "import/upload"},
+            "convert-file": {
+                "operation": "convert",
+                "input": "upload-file",
+                "output_format": output_format.lower()
+            },
+            "export-file": {
+                "operation": "export/url",
+                "input": "convert-file"
+            }
+        }
+    }
+    resp = requests.post(f"{CLOUDCONVERT_BASE_URL}/jobs", json=job_payload, headers=headers, timeout=10)
+    resp.raise_for_status()
+    job_data = resp.json()["data"]
+
+    # Step 2: Upload local file to CloudConvert
+    upload_task = next(t for t in job_data["tasks"] if t["name"] == "upload-file")
+    upload_url = upload_task["result"]["form"]["url"]
+    upload_params = upload_task["result"]["form"]["parameters"]
+
+    with open(input_path, "rb") as f:
+        requests.post(upload_url, data=upload_params, files={"file": f}, timeout=60)
+
+    # Step 3: Wait for job processing completion
+    job_id = job_data["id"]
+    status_resp = requests.get(f"{CLOUDCONVERT_BASE_URL}/jobs/{job_id}/wait", headers=headers, timeout=120)
+    status_resp.raise_for_status()
+
+    # Step 4: Stream resulting output file back
+    export_task = next(t for t in status_resp.json()["data"]["tasks"] if t["name"] == "export-file")
+    file_download_url = export_task["result"]["files"][0]["url"]
+
+    with requests.get(file_download_url, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        with open(out_file, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+    return out_file
+
+def convert_pdf_to_txt_locally(input_path: Path, tmp_dir: Path) -> Path:
+    """Performs lightweight pure-Python PDF text extraction on-server."""
+    reader = PdfReader(str(input_path))
+    pages_text = []
+    for page in reader.pages:
+        text = page.extract_text()
+        if text:
+            pages_text.append(text)
+    out_file = tmp_dir / "extracted_text.txt"
+    out_file.write_text("\n\n--- Page Break ---\n\n".join(pages_text), encoding="utf-8")
+    return out_file
 
 # --- CONFIG ---
 COMMANDS = {
@@ -108,7 +199,7 @@ COMMANDS = {
     "flac2mp3": {"label": "FLAC to MP3", "input": "FLAC", "output": "MP3", "extensions": {".flac"}, "cat": "audio"},
     "ogg2mp3": {"label": "OGG to MP3", "input": "OGG", "output": "MP3", "extensions": {".ogg"}, "cat": "audio"},
 }
-MAX_FILE_SIZE = 20 * 1024 * 1024 # 20MB
+MAX_FILE_SIZE = 50 * 1024 * 1024 # 50MB maximum (Telegram Bot API limit)
 
 app = Flask("")
 @app.route("/")
@@ -153,8 +244,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🚀 **Welcome to your ultimate File Converter Bot, {user.first_name}!**\n\n"
         "Transform documents, conversions, and files instantly using the structured dashboard below.\n\n"
         "⚙️ **System Limits:**\n"
-        "• Max file upload: **20MB**\n"
-        "• Daily bandwidth cap: **30MB**\n\n"
+        "• Max file upload: **50MB** (Powered by CloudConvert API)\n"
+        "• High performance cloud conversion processing\n\n"
         "👇 *Please select a category to view supported conversions:* "
     )
     await update.message.reply_text(text=intro_text, parse_mode="Markdown", reply_markup=get_categories_keyboard())
@@ -222,11 +313,11 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
     elif data.startswith("ttsspeed_"):
         speed_val = data.replace("ttsspeed_", "")
         context.user_data["tts_speed"] = speed_val
-        
+
         speed_label = "Slow" if speed_val == "-15%" else "Normal"
         label = COMMANDS["text2speech"]["label"]
         input_fmt = COMMANDS["text2speech"]["input"]
-        
+
         text = f"📥 *Selected:* {label} ({speed_label} Speed)\n\nPlease type or paste your raw **{input_fmt}** message directly into the chat. I will compile it into audio..."
         await query.message.reply_text(text=text, parse_mode="Markdown")
 
@@ -245,7 +336,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Action canceled. Please provide a valid textual feedback message thread.")
             context.user_data["mode"] = None
             return
-        
+
         admin_id = int(os.getenv("ADMIN_ID", 0))
         if admin_id != 0:
             user_info = f"👤 *New Feedback Received!*\n• From User: {update.effective_user.first_name}\n• User ID: `{user_id}`\n• Username: @{update.effective_user.username or 'None'}\n\n💬 *Message Body:*\n{feedback_text}"
@@ -257,7 +348,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     is_text_tts = (mode == "text2speech" and update.message.text and not update.message.text.startswith("/"))
-    
+
     file_obj = None
     if not is_text_tts:
         file_obj = (
@@ -269,12 +360,12 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not file_obj: return
 
         if file_obj.file_size > MAX_FILE_SIZE:
-            await update.message.reply_text("⚠️ File size exceeds boundaries (Max 20MB allowed).")
+            await update.message.reply_text("⚠️ File size exceeds boundaries (Max 50MB allowed by Telegram Bot API).")
             return
 
         allowed, _ = check_quota(user_id, file_obj.file_size)
         if not allowed:
-            await update.message.reply_text("🚫 Daily limit constraint reached! (30MB daily limit max).")
+            await update.message.reply_text("🚫 Daily limit constraint reached! (100MB daily limit max).")
             return
 
     status_msg = await update.message.reply_text("⏳ `[▓░░░░░░░░░] 10%` *Downloading target data from cloud servers...*", parse_mode="Markdown")
@@ -326,8 +417,35 @@ async def convert_file_async(mode, input_path, tmp_dir, tts_speed="+0%"):
         return [out]
     return await asyncio.to_thread(convert_file, mode, input_path, tmp_dir)
 
-# --- CONVERSION HELPERS ---
+# --- HYBRID CONVERSION ROUTER ENGINE ---
 def convert_file(mode, input_path, tmp_dir):
+    file_size_mb = os.path.getsize(input_path) / (1024 * 1024)
+    current_ram = psutil.virtual_memory().percent
+
+    # 1. Word to PDF: Heavy format - always route to CloudConvert
+    if mode == "docx2pdf":
+        logging.info("Routing DOCX -> PDF to CloudConvert API...")
+        return [convert_via_cloudconvert(input_path, "pdf", tmp_dir)]
+
+    # 2. PDF to Text: Lightweight pure-python local extraction
+    if mode == "pdf2txt":
+        try:
+            return [convert_pdf_to_txt_locally(input_path, tmp_dir)]
+        except Exception as err:
+            logging.warning(f"Local PDF text extraction failed ({err}). Offloading to CloudConvert API...")
+            return [convert_via_cloudconvert(input_path, "txt", tmp_dir)]
+
+    # 3. Offload large files or when server RAM is strained
+    if file_size_mb > LOCAL_MAX_SIZE_MB or current_ram > SAFE_RAM_THRESHOLD_PERCENT:
+        if mode in COMMANDS and COMMANDS[mode]["output"] != "PNGs":
+            output_fmt = COMMANDS[mode]["output"].lower()
+            try:
+                logging.info(f"Offloading large/strained file ({file_size_mb:.1f}MB, RAM {current_ram}%) to CloudConvert...")
+                return [convert_via_cloudconvert(input_path, output_fmt, tmp_dir)]
+            except Exception as api_err:
+                logging.warning(f"CloudConvert offload failed: {api_err}. Attempting local fallback...")
+
+    # --- LOCAL CONVERSION FALLBACKS ---
     if mode == "csv2xlsx":
         out = tmp_dir / f"{input_path.stem}.xlsx"
         df = pd.read_csv(input_path)
@@ -352,19 +470,14 @@ def convert_file(mode, input_path, tmp_dir):
 
     if mode == "pdf2docx":
         out = tmp_dir / "converted.docx"
-        cv = Converter(str(input_path))
-        cv.convert(str(out))
-        cv.close()
-        return [out]
-
-    if mode == "docx2pdf":
-        out = tmp_dir / f"{input_path.stem}.pdf"
-        convertapi.api_secret = os.getenv("CONVERTAPI_SECRET")
-        if not convertapi.api_secret:
-            raise Exception("Missing CONVERTAPI_SECRET environment variable config!")
-        result = convertapi.convert('pdf', { 'File': str(input_path) }, from_format = 'docx')
-        result.file.save(str(out))
-        return [out]
+        try:
+            cv = Converter(str(input_path))
+            cv.convert(str(out))
+            cv.close()
+            return [out]
+        except Exception as local_err:
+            logging.warning(f"Local pdf2docx failed ({local_err}). Offloading to CloudConvert API...")
+            return [convert_via_cloudconvert(input_path, "docx", tmp_dir)]
 
     if mode == "img2pdf":
         out = tmp_dir / "converted.pdf"
