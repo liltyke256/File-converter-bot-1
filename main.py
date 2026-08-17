@@ -162,6 +162,7 @@ CONVERTIO_BASE_URL = "https://api.convertio.co"
 
 LOCAL_MAX_SIZE_MB = 5.0
 SAFE_RAM_THRESHOLD_PERCENT = 70.0
+MIN_AVAILABLE_RAM_MB = 100.0  # Offload to APIs if free server RAM is under 100MB
 
 def get_cloudconvert_credits() -> int:
     """Queries CloudConvert account to inspect remaining daily credits."""
@@ -316,11 +317,37 @@ def convert_pdf_to_txt_locally(input_path: Path, tmp_dir: Path) -> Path:
 
 # --- CONFIG ---
 COMMANDS = {
-    # Documents
+    # Documents (Standard & Expanded Student Formats)
     "pdf2docx": {"label": "PDF to Word", "input": "PDF", "output": "DOCX", "extensions": {".pdf"}, "cat": "doc"},
     "docx2pdf": {"label": "Word to PDF", "input": "DOCX", "output": "PDF", "extensions": {".docx"}, "cat": "doc"},
+    "doc2pdf": {"label": "Legacy DOC to PDF", "input": "DOC", "output": "PDF", "extensions": {".doc"}, "cat": "doc"},
+    "doc2docx": {"label": "DOC to DOCX", "input": "DOC", "output": "DOCX", "extensions": {".doc"}, "cat": "doc"},
+    "odt2pdf": {"label": "ODT to PDF", "input": "ODT", "output": "PDF", "extensions": {".odt"}, "cat": "doc"},
+    "odt2docx": {"label": "ODT to Word", "input": "ODT", "output": "DOCX", "extensions": {".odt"}, "cat": "doc"},
+    "pages2pdf": {"label": "Pages to PDF", "input": "PAGES", "output": "PDF", "extensions": {".pages"}, "cat": "doc"},
+    "pages2docx": {"label": "Pages to Word", "input": "PAGES", "output": "DOCX", "extensions": {".pages"}, "cat": "doc"},
+    "rtf2pdf": {"label": "RTF to PDF", "input": "RTF", "output": "PDF", "extensions": {".rtf"}, "cat": "doc"},
+    "rtf2docx": {"label": "RTF to Word", "input": "RTF", "output": "DOCX", "extensions": {".rtf"}, "cat": "doc"},
     "txt2pdf": {"label": "Text to PDF", "input": "TXT", "output": "PDF", "extensions": {".txt"}, "cat": "doc"},
+    "pdf2txt": {"label": "PDF to Text", "input": "PDF", "output": "TXT", "extensions": {".pdf"}, "cat": "doc"},
+    
+    # Presentations & Slides
+    "pptx2pdf": {"label": "PPTX to PDF", "input": "PPTX", "output": "PDF", "extensions": {".pptx"}, "cat": "doc"},
+    "ppt2pdf": {"label": "PPT to PDF", "input": "PPT", "output": "PDF", "extensions": {".ppt"}, "cat": "doc"},
+    "key2pdf": {"label": "Keynote to PDF", "input": "KEY", "output": "PDF", "extensions": {".key"}, "cat": "doc"},
+
+    # Spreadsheets
     "csv2xlsx": {"label": "CSV to Excel", "input": "CSV", "output": "XLSX", "extensions": {".csv"}, "cat": "doc"},
+    "xls2xlsx": {"label": "XLS to XLSX", "input": "XLS", "output": "XLSX", "extensions": {".xls"}, "cat": "doc"},
+    "xls2pdf": {"label": "XLS/XLSX to PDF", "input": "XLS/XLSX", "output": "PDF", "extensions": {".xls", ".xlsx"}, "cat": "doc"},
+    "ods2xlsx": {"label": "ODS to XLSX", "input": "ODS", "output": "XLSX", "extensions": {".ods"}, "cat": "doc"},
+    "ods2pdf": {"label": "ODS to PDF", "input": "ODS", "output": "PDF", "extensions": {".ods"}, "cat": "doc"},
+
+    # E-Books & Study Materials
+    "epub2pdf": {"label": "EPUB to PDF", "input": "EPUB", "output": "PDF", "extensions": {".epub"}, "cat": "doc"},
+    "epub2txt": {"label": "EPUB to Text", "input": "EPUB", "output": "TXT", "extensions": {".epub"}, "cat": "doc"},
+    "mobi2pdf": {"label": "MOBI to PDF", "input": "MOBI", "output": "PDF", "extensions": {".mobi"}, "cat": "doc"},
+    "pdf2epub": {"label": "PDF to EPUB", "input": "PDF", "output": "EPUB", "extensions": {".pdf"}, "cat": "doc"},
 
     # Images
     "jpg2png": {"label": "JPG to PNG", "input": "JPG/JPEG", "output": "PNG", "extensions": {".jpg", ".jpeg"}, "cat": "img"},
@@ -395,7 +422,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "📖 *Help Menu*\nSelect a primary category to access specific operations from the visual dashboard, then upload your file.\n\n"
         "💡 *Features Available Summary:*\n"
-        "• Document Conversions (Word, PDF, TXT, CSV)\n"
+        "• Document Conversions (Word, PPTX, PDF, EPUB, Pages, ODT, CSV, Excel)\n"
         "• Image Formats & OCR Text Extraction\n"
         "• Audio processing engine & Text to Speech\n"
         "• Zip / Unzip tools\n"
@@ -561,13 +588,22 @@ async def convert_file_async(mode, input_path, tmp_dir, tts_speed="+0%"):
 def convert_file(mode, input_path, tmp_dir):
     file_size_mb = os.path.getsize(input_path) / (1024 * 1024)
     current_ram = psutil.virtual_memory().percent if psutil else 0.0
+    available_ram_mb = (psutil.virtual_memory().available / (1024 * 1024)) if psutil else 500.0
 
-    # 1. Word to PDF: Heavy format - always route to Cloud Conversion Engine
-    if mode == "docx2pdf":
-        logging.info("Routing DOCX -> PDF to Cloud API Router...")
-        return [convert_via_cloud_apis(input_path, "pdf", tmp_dir)]
+    # 1. HEAVY FORMATS: Always offload heavy office/e-book rendering to Cloud APIs to avoid server OOM crash (>100MB RAM needed)
+    HEAVY_CLOUD_MODES = {
+        "docx2pdf", "doc2pdf", "doc2docx", "odt2pdf", "odt2docx",
+        "pages2pdf", "pages2docx", "pptx2pdf", "ppt2pdf", "key2pdf",
+        "xls2xlsx", "xls2pdf", "ods2xlsx", "ods2pdf", "epub2pdf",
+        "mobi2pdf", "pdf2epub"
+    }
 
-    # 2. PDF to Text: Lightweight pure-python local extraction
+    if mode in HEAVY_CLOUD_MODES:
+        output_fmt = COMMANDS[mode]["output"].lower()
+        logging.info(f"Routing heavy document mode '{mode}' -> '{output_fmt}' directly to Cloud API Router...")
+        return [convert_via_cloud_apis(input_path, output_fmt, tmp_dir)]
+
+    # 2. PDF to Text: Lightweight pure-python local extraction (<10MB RAM)
     if mode == "pdf2txt":
         try:
             return [convert_pdf_to_txt_locally(input_path, tmp_dir)]
@@ -575,17 +611,33 @@ def convert_file(mode, input_path, tmp_dir):
             logging.warning(f"Local PDF text extraction failed ({err}). Offloading to Cloud API Router...")
             return [convert_via_cloud_apis(input_path, "txt", tmp_dir)]
 
-    # 3. Offload large files or when server RAM is strained
-    if file_size_mb > LOCAL_MAX_SIZE_MB or current_ram > SAFE_RAM_THRESHOLD_PERCENT:
+    # 3. EPUB to TXT: Lightweight local extraction (<15MB RAM)
+    if mode == "epub2txt":
+        try:
+            out = tmp_dir / f"{input_path.stem}.txt"
+            doc = fitz.open(input_path)
+            extracted = []
+            for page in doc:
+                text = page.get_text()
+                if text:
+                    extracted.append(text)
+            out.write_text("\n\n".join(extracted), encoding="utf-8")
+            return [out]
+        except Exception as err:
+            logging.warning(f"Local EPUB text extraction failed ({err}). Offloading to Cloud API Router...")
+            return [convert_via_cloud_apis(input_path, "txt", tmp_dir)]
+
+    # 4. SAFETY DYNAMIC OFFLOAD: Large files, high RAM percent, or free RAM dropping under 100MB
+    if file_size_mb > LOCAL_MAX_SIZE_MB or current_ram > SAFE_RAM_THRESHOLD_PERCENT or available_ram_mb < MIN_AVAILABLE_RAM_MB:
         if mode in COMMANDS and COMMANDS[mode]["output"] != "PNGs":
             output_fmt = COMMANDS[mode]["output"].lower()
             try:
-                logging.info(f"Offloading large/strained file ({file_size_mb:.1f}MB, RAM {current_ram}%) to Cloud API Router...")
+                logging.info(f"Offloading task '{mode}' ({file_size_mb:.1f}MB, Free RAM: {available_ram_mb:.1f}MB) to Cloud API Router...")
                 return [convert_via_cloud_apis(input_path, output_fmt, tmp_dir)]
             except Exception as api_err:
                 logging.warning(f"Cloud API Router offload failed: {api_err}. Attempting local fallback...")
 
-    # --- LOCAL CONVERSION FALLBACKS ---
+    # --- LOCAL CONVERSION FALLBACKS (<100MB RAM safe) ---
     if mode == "csv2xlsx":
         out = tmp_dir / f"{input_path.stem}.xlsx"
         df = pd.read_csv(input_path)
@@ -624,12 +676,12 @@ def convert_file(mode, input_path, tmp_dir):
         out.write_bytes(img2pdf.convert(str(input_path)))
         return [out]
 
-    if mode == "txt2pdf":
+    if mode in ["txt2pdf", "rtf2pdf"]:
         out = tmp_dir / "converted.pdf"
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Helvetica", size=12)
-        with open(input_path, 'r', encoding='utf-8') as f:
+        with open(input_path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
                 pdf.cell(200, 10, text=line.strip(), new_x="LMARGIN", new_y="NEXT", align='L')
         pdf.output(str(out))
@@ -677,6 +729,7 @@ def convert_file(mode, input_path, tmp_dir):
         if output_fmt in ["wav", "mp3"]:
             subprocess.run(["ffmpeg", "-y", "-i", str(input_path), "-vn", str(out)], check=True)
             return [out]
+            
     return []
 
 # --- ADMIN PANEL FUNCTIONS ---
