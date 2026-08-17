@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -152,9 +153,13 @@ def check_quota(user_id, file_size_bytes):
         logging.error(f"Quota validation error: {e}")
         return True, 0  # Fail-safe to let users convert if DB experiences latency spikes
 
-# --- CLOUDCONVERT HYBRID API & RAM SAFETY ENGINE ---
+# --- CLOUDCONVERT & CONVERTIO HYBRID API ENGINE ---
 CLOUDCONVERT_KEY = os.getenv("CLOUDCONVERT_API_KEY")
+CONVERTIO_KEY = os.getenv("CONVERTIO_API_KEY")
+
 CLOUDCONVERT_BASE_URL = "https://api.cloudconvert.com/v2"
+CONVERTIO_BASE_URL = "https://api.convertio.co"
+
 LOCAL_MAX_SIZE_MB = 5.0
 SAFE_RAM_THRESHOLD_PERCENT = 70.0
 
@@ -181,7 +186,7 @@ def convert_via_cloudconvert(input_path: Path, output_format: str, tmp_dir: Path
 
     credits_left = get_cloudconvert_credits()
     if credits_left < 1:
-        raise Exception("Daily CloudConvert API conversion quota exhausted (25/25 used today). Try again tomorrow!")
+        raise Exception("Daily CloudConvert API conversion quota exhausted (25/25 used today).")
 
     headers = {"Authorization": f"Bearer {CLOUDCONVERT_KEY}"}
     out_file = tmp_dir / f"converted.{output_format.lower()}"
@@ -229,6 +234,71 @@ def convert_via_cloudconvert(input_path: Path, output_format: str, tmp_dir: Path
                 f.write(chunk)
 
     return out_file
+
+def convert_via_convertio(input_path: Path, output_format: str, tmp_dir: Path) -> Path:
+    """Fail-safe conversion offloader using Convertio REST API."""
+    if not CONVERTIO_KEY:
+        raise Exception("Missing CONVERTIO_API_KEY environment variable!")
+
+    out_file = tmp_dir / f"converted.{output_format.lower()}"
+
+    # Step 1: Start Convertio Job with base64/file upload
+    with open(input_path, "rb") as f:
+        file_content = f.read()
+
+    payload = {
+        "apikey": CONVERTIO_KEY,
+        "input": "upload",
+        "file": file_content.decode("latin1"), # Safe byte representation for json payload
+        "filename": input_path.name,
+        "outputformat": output_format.lower()
+    }
+
+    logging.info("Initiating Convertio fail-safe conversion request...")
+    resp = requests.post(f"{CONVERTIO_BASE_URL}/convert", json=payload, timeout=30)
+    resp.raise_for_status()
+    res_data = resp.json()
+
+    if res_data.get("status") != "ok":
+        raise Exception(f"Convertio API error: {res_data.get('error')}")
+
+    conv_id = res_data["data"]["id"]
+
+    # Step 2: Poll Convertio for job completion
+    status_url = f"{CONVERTIO_BASE_URL}/convert/{conv_id}/status"
+    for _ in range(30): # Poll up to 60 seconds
+        time.sleep(2)
+        status_resp = requests.get(status_url, timeout=10)
+        status_data = status_resp.json()
+
+        if status_data.get("status") == "ok":
+            step = status_data["data"]["step"]
+            if step == "finish":
+                download_url = status_data["data"]["output"]["url"]
+                # Step 3: Stream converted file
+                with requests.get(download_url, stream=True, timeout=60) as r:
+                    r.raise_for_status()
+                    with open(out_file, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                return out_file
+            elif step == "error":
+                raise Exception(f"Convertio conversion failed: {status_data['data'].get('error')}")
+
+    raise Exception("Convertio conversion timed out.")
+
+def convert_via_cloud_apis(input_path: Path, output_format: str, tmp_dir: Path) -> Path:
+    """Master Cloud Router: Tries CloudConvert first; falls back to Convertio if it fails or runs out of credits."""
+    try:
+        logging.info(f"Attempting cloud conversion to {output_format} via CloudConvert...")
+        return convert_via_cloudconvert(input_path, output_format, tmp_dir)
+    except Exception as cc_err:
+        logging.warning(f"CloudConvert failed or quota exhausted: {cc_err}. Switching to Convertio fail-safe...")
+        try:
+            return convert_via_convertio(input_path, output_format, tmp_dir)
+        except Exception as conv_err:
+            logging.error(f"Convertio fail-safe also failed: {conv_err}")
+            raise Exception("All cloud conversion APIs are currently unavailable or out of credits. Please try again tomorrow!")
 
 def convert_pdf_to_txt_locally(input_path: Path, tmp_dir: Path) -> Path:
     """Performs lightweight pure-Python PDF text extraction on-server."""
@@ -314,7 +384,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🚀 **Welcome to your ultimate File Converter Bot, {user.first_name}!**\n\n"
         "Transform documents, conversions, and files instantly using the structured dashboard below.\n\n"
         "⚙️ **System Limits:**\n"
-        "• Max file upload: **50MB** (Powered by CloudConvert API)\n"
+        "• Max file upload: **50MB** (Powered by CloudConvert & Convertio APIs)\n"
         "• High performance cloud conversion processing\n\n"
         "👇 *Please select a category to view supported conversions:* "
     )
@@ -492,28 +562,28 @@ def convert_file(mode, input_path, tmp_dir):
     file_size_mb = os.path.getsize(input_path) / (1024 * 1024)
     current_ram = psutil.virtual_memory().percent if psutil else 0.0
 
-    # 1. Word to PDF: Heavy format - always route to CloudConvert
+    # 1. Word to PDF: Heavy format - always route to Cloud Conversion Engine
     if mode == "docx2pdf":
-        logging.info("Routing DOCX -> PDF to CloudConvert API...")
-        return [convert_via_cloudconvert(input_path, "pdf", tmp_dir)]
+        logging.info("Routing DOCX -> PDF to Cloud API Router...")
+        return [convert_via_cloud_apis(input_path, "pdf", tmp_dir)]
 
     # 2. PDF to Text: Lightweight pure-python local extraction
     if mode == "pdf2txt":
         try:
             return [convert_pdf_to_txt_locally(input_path, tmp_dir)]
         except Exception as err:
-            logging.warning(f"Local PDF text extraction failed ({err}). Offloading to CloudConvert API...")
-            return [convert_via_cloudconvert(input_path, "txt", tmp_dir)]
+            logging.warning(f"Local PDF text extraction failed ({err}). Offloading to Cloud API Router...")
+            return [convert_via_cloud_apis(input_path, "txt", tmp_dir)]
 
     # 3. Offload large files or when server RAM is strained
     if file_size_mb > LOCAL_MAX_SIZE_MB or current_ram > SAFE_RAM_THRESHOLD_PERCENT:
         if mode in COMMANDS and COMMANDS[mode]["output"] != "PNGs":
             output_fmt = COMMANDS[mode]["output"].lower()
             try:
-                logging.info(f"Offloading large/strained file ({file_size_mb:.1f}MB, RAM {current_ram}%) to CloudConvert...")
-                return [convert_via_cloudconvert(input_path, output_fmt, tmp_dir)]
+                logging.info(f"Offloading large/strained file ({file_size_mb:.1f}MB, RAM {current_ram}%) to Cloud API Router...")
+                return [convert_via_cloud_apis(input_path, output_fmt, tmp_dir)]
             except Exception as api_err:
-                logging.warning(f"CloudConvert offload failed: {api_err}. Attempting local fallback...")
+                logging.warning(f"Cloud API Router offload failed: {api_err}. Attempting local fallback...")
 
     # --- LOCAL CONVERSION FALLBACKS ---
     if mode == "csv2xlsx":
@@ -546,8 +616,8 @@ def convert_file(mode, input_path, tmp_dir):
             cv.close()
             return [out]
         except Exception as local_err:
-            logging.warning(f"Local pdf2docx failed ({local_err}). Offloading to CloudConvert API...")
-            return [convert_via_cloudconvert(input_path, "docx", tmp_dir)]
+            logging.warning(f"Local pdf2docx failed ({local_err}). Offloading to Cloud API Router...")
+            return [convert_via_cloud_apis(input_path, "docx", tmp_dir)]
 
     if mode == "img2pdf":
         out = tmp_dir / "converted.pdf"
