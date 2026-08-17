@@ -1,3 +1,4 @@
+PyMuPDF
 psutil
 python-telegram-bot
 flask
