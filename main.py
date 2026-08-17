@@ -1,12 +1,15 @@
 import asyncio
 import datetime
 import io
+import json
 import logging
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 import zipfile
 import requests
 
@@ -18,9 +21,6 @@ try:
     import psutil
 except ImportError:
     psutil = None
-
-# Cloud SQLite Driver (PEP 249 SQLite-compatible for Turso)
-import hrana_client
 
 from flask import Flask
 import img2pdf
@@ -45,58 +45,108 @@ from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQuer
 # Setup basic logging to see issues in logs
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- CLOUD SQLITE (TURSO) SETUP ---
+# --- CLOUD SQLITE (TURSO HTTP PIPELINE) SETUP ---
 TURSO_URL = os.getenv("TURSO_DATABASE_URL")
 TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
 
-def get_db_connection():
-    """Establishes a connection directly to your remote Turso SQLite cluster using Hrana DB-API 2.0 interface."""
-    if not TURSO_URL or not TURSO_TOKEN:
-        raise Exception("Missing TURSO_DATABASE_URL or TURSO_AUTH_TOKEN in system environment!")
-    return hrana_client.connect(
-        url=TURSO_URL,
-        auth_token=TURSO_TOKEN
+def get_turso_http_url():
+    if not TURSO_URL:
+        raise Exception("Missing TURSO_DATABASE_URL in system environment!")
+    # Normalize libsql:// or wss:// protocols to https:// for direct HTTP execution
+    url = TURSO_URL
+    if url.startswith("libsql://"):
+        url = url.replace("libsql://", "https://", 1)
+    elif url.startswith("wss://"):
+        url = url.replace("wss://", "https://", 1)
+    
+    if not url.endswith("/v2/pipeline"):
+        url = url.rstrip("/") + "/v2/pipeline"
+    return url
+
+def execute_turso_query(stmt_sql, args=None):
+    """Executes a SQL query directly via Turso HTTP REST API with zero native dependencies."""
+    if not TURSO_TOKEN:
+        raise Exception("Missing TURSO_AUTH_TOKEN in system environment!")
+    
+    endpoint = get_turso_http_url()
+    
+    # Format positional arguments for Turso Pipeline API
+    formatted_args = []
+    if args:
+        for arg in args:
+            if isinstance(arg, int):
+                formatted_args.append({"type": "integer", "value": str(arg)})
+            elif isinstance(arg, str):
+                formatted_args.append({"type": "text", "value": arg})
+            else:
+                formatted_args.append({"type": "text", "value": str(arg)})
+
+    payload = {
+        "requests": [
+            {
+                "type": "execute",
+                "stmt": {
+                    "sql": stmt_sql,
+                    "args": formatted_args
+                }
+            },
+            {"type": "close"}
+        ]
+    }
+    
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {TURSO_TOKEN}",
+            "Content-Type": "application/json"
+        },
+        method="POST"
     )
+    
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            results = data.get("results", [])
+            if results and results[0].get("type") == "ok":
+                response_stmt = results[0]["response"]["result"]
+                rows = []
+                for row in response_stmt.get("rows", []):
+                    parsed_row = [cell.get("value") for cell in row]
+                    rows.append(parsed_row)
+                return rows
+            return []
+    except Exception as e:
+        logging.error(f"Turso HTTP Execution Error: {e}")
+        raise e
 
 def init_db():
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, last_seen TEXT)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS usage (user_id INTEGER, day TEXT, bytes_sent INTEGER, PRIMARY KEY (user_id, day))''')
-        conn.commit()
-        conn.close()
-        logging.info("Cloud SQLite schema verified successfully.")
+        execute_turso_query("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, last_seen TEXT);")
+        execute_turso_query("CREATE TABLE IF NOT EXISTS usage (user_id INTEGER, day TEXT, bytes_sent INTEGER, PRIMARY KEY (user_id, day));")
+        logging.info("Cloud SQLite schema verified successfully via HTTP pipeline.")
     except Exception as e:
         logging.error(f"Database initialization deferred or failed: {e}")
 
 def track_user_db(user_id):
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
         today = str(datetime.date.today())
-        c.execute("INSERT OR REPLACE INTO users (user_id, last_seen) VALUES (?, ?)", (user_id, today))
-        conn.commit()
-        conn.close()
+        execute_turso_query("INSERT OR REPLACE INTO users (user_id, last_seen) VALUES (?, ?);", [user_id, today])
     except Exception as e:
         logging.error(f"Failed to track user in Cloud DB: {e}")
 
 def check_quota(user_id, file_size_bytes):
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
         today = str(datetime.date.today())
-        c.execute("SELECT bytes_sent FROM usage WHERE user_id = ? AND day = ?", (user_id, today))
-        row = c.fetchone()
-        current_usage = row[0] if row else 0
+        rows = execute_turso_query("SELECT bytes_sent FROM usage WHERE user_id = ? AND day = ?;", [user_id, today])
+        current_usage = int(rows[0][0]) if rows and rows[0][0] is not None else 0
         MAX_DAILY = 100 * 1024 * 1024 # 100MB daily limit buffer
+        
         if current_usage + file_size_bytes > MAX_DAILY:
-            conn.close()
             return False, current_usage
+            
         new_usage = current_usage + file_size_bytes
-        c.execute("INSERT OR REPLACE INTO usage (user_id, day, bytes_sent) VALUES (?, ?, ?)", (user_id, today, new_usage))
-        conn.commit()
-        conn.close()
+        execute_turso_query("INSERT OR REPLACE INTO usage (user_id, day, bytes_sent) VALUES (?, ?, ?);", [user_id, today, new_usage])
         return True, new_usage
     except Exception as e:
         logging.error(f"Quota validation error: {e}")
@@ -562,32 +612,30 @@ def convert_file(mode, input_path, tmp_dir):
 # --- ADMIN PANEL FUNCTIONS ---
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM users")
-    count = c.fetchone()[0]
-    conn.close()
-    await update.message.reply_text(f"📊 *Admin Metrics:* Total Registered Users = `{count}`", parse_mode="Markdown")
+    try:
+        rows = execute_turso_query("SELECT COUNT(*) FROM users;")
+        count = rows[0][0] if rows else 0
+        await update.message.reply_text(f"📊 *Admin Metrics:* Total Registered Users = `{count}`", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to retrieve stats: {e}")
 
 async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT user_id, last_seen FROM users ORDER BY last_seen DESC")
-    rows = c.fetchall()
-    conn.close()
+    try:
+        rows = execute_turso_query("SELECT user_id, last_seen FROM users ORDER BY last_seen DESC;")
+        if not rows:
+            await update.message.reply_text("📁 No registered user tracking logs discovered inside cloud database.")
+            return
 
-    if not rows:
-        await update.message.reply_text("📁 No registered user tracking logs discovered inside cloud database.")
-        return
-
-    msg = "👥 *Database User Directory Logs:*\n\n"
-    for idx, row in enumerate(rows, 1):
-        msg += f"{idx}. ID: `{row[0]}` | Last Seen: `{row[1]}`\n"
-        if len(msg) > 3500:
-            msg += "\n...Truncated due to limits..."
-            break
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        msg = "👥 *Database User Directory Logs:*\n\n"
+        for idx, row in enumerate(rows, 1):
+            msg += f"{idx}. ID: `{row[0]}` | Last Seen: `{row[1]}`\n"
+            if len(msg) > 3500:
+                msg += "\n...Truncated due to limits..."
+                break
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to retrieve user logs: {e}")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
@@ -596,23 +644,21 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     broadcast_msg = " ".join(context.args)
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM users")
-    users = c.fetchall()
-    conn.close()
+    try:
+        users = execute_turso_query("SELECT user_id FROM users;")
+        success, failure = 0, 0
+        await update.message.reply_text(f"📢 Starting broadcast sequence to {len(users)} users...")
 
-    success, failure = 0, 0
-    await update.message.reply_text(f"📢 Starting broadcast sequence to {len(users)} users...")
-
-    for user in users:
-        try:
-            await context.bot.send_message(chat_id=user[0], text=broadcast_msg, parse_mode="Markdown")
-            success += 1
-            await asyncio.sleep(0.05)
-        except Exception:
-            failure += 1
-    await update.message.reply_text(f"✅ *Broadcast completed!*\n• Successful deliveries: `{success}`\n• Failed deliveries: `{failure}`", parse_mode="Markdown")
+        for user in users:
+            try:
+                await context.bot.send_message(chat_id=int(user[0]), text=broadcast_msg, parse_mode="Markdown")
+                success += 1
+                await asyncio.sleep(0.05)
+            except Exception:
+                failure += 1
+        await update.message.reply_text(f"✅ *Broadcast completed!*\n• Successful deliveries: `{success}`\n• Failed deliveries: `{failure}`", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to initiate broadcast query: {e}")
 
 async def shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != int(os.getenv("ADMIN_ID", 0)): return
