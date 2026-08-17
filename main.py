@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import datetime
 import io
 import json
@@ -243,14 +244,14 @@ def convert_via_convertio(input_path: Path, output_format: str, tmp_dir: Path) -
 
     out_file = tmp_dir / f"converted.{output_format.lower()}"
 
-    # Step 1: Start Convertio Job with base64/file upload
+    # Step 1: Base64 encode the file for safe transmission
     with open(input_path, "rb") as f:
-        file_content = f.read()
+        encoded_file = base64.b64encode(f.read()).decode("utf-8")
 
     payload = {
         "apikey": CONVERTIO_KEY,
-        "input": "upload",
-        "file": file_content.decode("latin1"), # Safe byte representation for json payload
+        "input": "base64",
+        "file": encoded_file,
         "filename": input_path.name,
         "outputformat": output_format.lower()
     }
@@ -696,10 +697,20 @@ def convert_file(mode, input_path, tmp_dir):
     if mode == "unzip":
         if not zipfile.is_zipfile(input_path):
             raise Exception("The provided file is not a valid zip compression archive.")
+        
         extract_dir = tmp_dir / "extracted_files"
         extract_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Security Fix: Prevent Path Traversal (Zip Slip)
+        resolved_extract_dir = extract_dir.resolve()
+        
         with zipfile.ZipFile(input_path, 'r') as zipf:
+            for member in zipf.infolist():
+                target_path = (extract_dir / member.filename).resolve()
+                if not str(target_path).startswith(str(resolved_extract_dir)):
+                    raise Exception("Security Error: Archive contains unsafe relative paths.")
             zipf.extractall(extract_dir)
+            
         return [p for p in extract_dir.rglob('*') if p.is_file()]
 
     if mode in COMMANDS:
@@ -797,7 +808,9 @@ def main():
         print("CRITICAL LOG ERROR: Missing BOT_TOKEN or ADMIN_ID environment variables!")
         return
 
-    Thread(target=lambda: app.run(host="0.0.0.0", port=8080), daemon=True).start()
+    # Security/Hosting Fix: Dynamically bind to the PORT variable Render assigns.
+    port = int(os.getenv("PORT", 8080))
+    Thread(target=lambda: app.run(host="0.0.0.0", port=port), daemon=True).start()
 
     bot_app = Application.builder().token(token).build()
 
