@@ -9,12 +9,18 @@ import sys
 import tempfile
 import zipfile
 import requests
-import psutil  # For host RAM safety checks
+
 from pathlib import Path
 from threading import Thread
 
-# Swap built-in sqlite3 for Cloud SQLite (libSQL)
-import libsql
+# Try importing psutil safely for host RAM checks
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+# Cloud SQLite Driver (PEP 249 SQLite-compatible for Turso)
+import hrana_client
 
 from flask import Flask
 import img2pdf
@@ -22,13 +28,19 @@ import pymupdf as fitz
 
 sys.modules["fitz"] = fitz
 
-import pandas as pd  # Added for CSV conversion
+import pandas as pd
 from fpdf import FPDF
 from pdf2docx import Converter
 from PIL import Image
-from pypdf import PdfReader  # Lightweight local PDF text extractor
+
+# Try importing PdfReader safely
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 
 # Setup basic logging to see issues in logs
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -38,19 +50,25 @@ TURSO_URL = os.getenv("TURSO_DATABASE_URL")
 TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
 
 def get_db_connection():
-    """Establishes a stateless connection directly to your remote Turso SQLite cluster"""
+    """Establishes a connection directly to your remote Turso SQLite cluster using Hrana DB-API 2.0 interface."""
     if not TURSO_URL or not TURSO_TOKEN:
         raise Exception("Missing TURSO_DATABASE_URL or TURSO_AUTH_TOKEN in system environment!")
-    return libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
+    return hrana_client.connect(
+        url=TURSO_URL,
+        auth_token=TURSO_TOKEN
+    )
 
 def init_db():
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, last_seen TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS usage (user_id INTEGER, day TEXT, bytes_sent INTEGER, PRIMARY KEY (user_id, day))''')
-    conn.commit()
-    conn.close()
-    logging.info("Cloud SQLite schema verified successfully.")
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, last_seen TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS usage (user_id INTEGER, day TEXT, bytes_sent INTEGER, PRIMARY KEY (user_id, day))''')
+        conn.commit()
+        conn.close()
+        logging.info("Cloud SQLite schema verified successfully.")
+    except Exception as e:
+        logging.error(f"Database initialization deferred or failed: {e}")
 
 def track_user_db(user_id):
     try:
@@ -71,7 +89,7 @@ def check_quota(user_id, file_size_bytes):
         c.execute("SELECT bytes_sent FROM usage WHERE user_id = ? AND day = ?", (user_id, today))
         row = c.fetchone()
         current_usage = row[0] if row else 0
-        MAX_DAILY = 100 * 1024 * 1024 # Increased daily limit buffer to accommodate larger 50MB files
+        MAX_DAILY = 100 * 1024 * 1024 # 100MB daily limit buffer
         if current_usage + file_size_bytes > MAX_DAILY:
             conn.close()
             return False, current_usage
@@ -82,7 +100,7 @@ def check_quota(user_id, file_size_bytes):
         return True, new_usage
     except Exception as e:
         logging.error(f"Quota validation error: {e}")
-        return True, 0  # Fail-safe to let users convert if DB experiences minor latency spikes
+        return True, 0  # Fail-safe to let users convert if DB experiences latency spikes
 
 # --- CLOUDCONVERT HYBRID API & RAM SAFETY ENGINE ---
 CLOUDCONVERT_KEY = os.getenv("CLOUDCONVERT_API_KEY")
@@ -110,7 +128,7 @@ def convert_via_cloudconvert(input_path: Path, output_format: str, tmp_dir: Path
     """Offloads heavy file conversion tasks to CloudConvert REST API."""
     if not CLOUDCONVERT_KEY:
         raise Exception("Missing CLOUDCONVERT_API_KEY environment variable!")
-    
+
     credits_left = get_cloudconvert_credits()
     if credits_left < 1:
         raise Exception("Daily CloudConvert API conversion quota exhausted (25/25 used today). Try again tomorrow!")
@@ -164,6 +182,8 @@ def convert_via_cloudconvert(input_path: Path, output_format: str, tmp_dir: Path
 
 def convert_pdf_to_txt_locally(input_path: Path, tmp_dir: Path) -> Path:
     """Performs lightweight pure-Python PDF text extraction on-server."""
+    if not PdfReader:
+        raise Exception("pypdf module not available locally.")
     reader = PdfReader(str(input_path))
     pages_text = []
     for page in reader.pages:
@@ -420,7 +440,7 @@ async def convert_file_async(mode, input_path, tmp_dir, tts_speed="+0%"):
 # --- HYBRID CONVERSION ROUTER ENGINE ---
 def convert_file(mode, input_path, tmp_dir):
     file_size_mb = os.path.getsize(input_path) / (1024 * 1024)
-    current_ram = psutil.virtual_memory().percent
+    current_ram = psutil.virtual_memory().percent if psutil else 0.0
 
     # 1. Word to PDF: Heavy format - always route to CloudConvert
     if mode == "docx2pdf":
@@ -488,10 +508,10 @@ def convert_file(mode, input_path, tmp_dir):
         out = tmp_dir / "converted.pdf"
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Arial", size=12)
+        pdf.set_font("Helvetica", size=12)
         with open(input_path, 'r', encoding='utf-8') as f:
             for line in f:
-                pdf.cell(200, 10, txt=line, ln=True, align='L')
+                pdf.cell(200, 10, text=line.strip(), new_x="LMARGIN", new_y="NEXT", align='L')
         pdf.output(str(out))
         return [out]
 
