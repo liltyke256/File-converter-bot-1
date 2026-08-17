@@ -12,4 +12,4 @@ fpdf2
 pandas
 openpyxl
 edge-tts
-libsql-client
+hrana-client-python
